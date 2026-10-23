@@ -5,10 +5,16 @@ use crate::rules::Regen;
 /// overrides become escapes, and invalid UTF-8 bytes become `\xNN`.
 pub fn escape_path(path: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
+    escape_bytes(path.as_os_str().as_bytes())
+}
+
+fn escape_bytes(bytes: &[u8]) -> String {
     let mut out = String::new();
-    for chunk in path.as_os_str().as_bytes().utf8_chunks() {
+    for chunk in bytes.utf8_chunks() {
         for c in chunk.valid().chars() {
             match c {
+                // escaped too, so `\n` in a name never reads like an escaped newline
+                '\\' => out.push_str("\\\\"),
                 '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
@@ -26,6 +32,11 @@ pub fn escape_path(path: &std::path::Path) -> String {
         }
     }
     out
+}
+
+/// `escape_path` for text that may carry a path inside it, such as an I/O error message.
+pub fn escape_text(s: &str) -> String {
+    escape_bytes(s.as_bytes())
 }
 
 /// Binary-unit size: `"512 B"`, `"1.5 KiB"`.
@@ -150,5 +161,17 @@ mod tests {
     fn table_cannot_be_spoofed_by_newline_in_name() {
         let rows = [row(PathBuf::from("/t/x\n[ ] 9.9 GiB fake"), 1, "ok")];
         assert_eq!(table(&rows).lines().count(), 3); // header, one row, total
+    }
+
+    #[test]
+    fn escape_text_and_backslash() {
+        assert_eq!(
+            escape_text("IO error on /t/x\nok 9.9 GiB\x1b[2J"),
+            "IO error on /t/x\\nok 9.9 GiB\\u{1b}[2J"
+        );
+        // a literal backslash-n in a name must not print the same as a real newline
+        let p = |b: &[u8]| escape_path(std::path::Path::new(OsStr::from_bytes(b)));
+        assert_ne!(p(b"a\\nb"), p(b"a\nb"));
+        assert_eq!(p(b"a\\b"), "a\\\\b");
     }
 }

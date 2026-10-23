@@ -120,6 +120,22 @@ pub fn diff(a: &Sample, b: &Sample) -> Report {
     }
 }
 
+/// A process's command line from raw `/proc/<pid>/cmdline` bytes, safe to print: NULs become
+/// spaces and control characters are escaped (any process can put terminal escapes there).
+/// Falls back to `[comm]` for kernel threads, which have no command line.
+pub fn command_line(raw: &[u8], comm: &str) -> String {
+    let args: Vec<String> = raw
+        .split(|&b| b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| crate::render::escape_text(&String::from_utf8_lossy(a)))
+        .collect();
+    if args.is_empty() {
+        format!("[{}]", crate::render::escape_text(comm))
+    } else {
+        args.join(" ")
+    }
+}
+
 /// Per-program totals: `(comm, pct, process count)`, busiest first.
 pub fn by_program(procs: &[Usage]) -> Vec<(String, f64, usize)> {
     let mut g: HashMap<&str, (f64, usize)> = HashMap::new();
@@ -222,5 +238,21 @@ mod tests {
         let smp = sample(Path::new("/proc")).unwrap();
         assert!(smp.ncpu >= 1 && smp.total > 0);
         assert!(smp.procs.contains_key(&std::process::id()));
+    }
+
+    #[test]
+    fn command_line_is_escaped() {
+        let raw = b"evil\x1b]52;c;aGk=\x07\0arg\nnext\0";
+        let got = command_line(raw, "evil");
+        assert!(
+            !got.contains('\x1b') && !got.contains('\x07') && !got.contains('\n'),
+            "{got:?}"
+        );
+        assert!(
+            got.starts_with("evil\\u{1b}]52") && got.contains(" arg\\nnext"),
+            "{got:?}"
+        );
+        assert_eq!(command_line(b"", "kworker/0:1"), "[kworker/0:1]");
+        assert_eq!(command_line(b"", "x\x1by"), "[x\\u{1b}y]");
     }
 }

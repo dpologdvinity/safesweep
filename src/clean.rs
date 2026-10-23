@@ -1,5 +1,5 @@
 use crate::guard::{check, in_use};
-use crate::render::{escape_path, human};
+use crate::render::{escape_path, escape_text, human};
 use crate::scan::measure;
 use crate::{Ctx, Row};
 use std::fs::{self, OpenOptions};
@@ -57,15 +57,18 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
                 &root,
                 r.rule.min_age_days,
                 ctx,
-                live.as_deref(),
+                live.as_ref(),
             )
             .map(|()| e)
         });
         let entry = match fresh {
             Ok(e) => e,
             Err(reason) => {
-                out.lines
-                    .push(format!("skipped {}: {reason}", escape_path(&r.path)));
+                out.lines.push(format!(
+                    "skipped {}: {}",
+                    escape_path(&r.path),
+                    escape_text(&reason)
+                ));
                 continue;
             }
         };
@@ -74,9 +77,12 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
             Ok(_) => fs::remove_file(&r.path),
             Err(e) => Err(e),
         };
+        let logged = match &removed {
+            Ok(()) => writeln!(manifest, "{}\t{}", entry.bytes, escape_path(&r.path)),
+            Err(e) => writeln!(manifest, "ERROR\t{}\t{e}", escape_path(&r.path)),
+        };
         match removed {
             Ok(()) => {
-                writeln!(manifest, "{}\t{}", entry.bytes, escape_path(&r.path))?;
                 out.lines.push(format!(
                     "removed {} {}",
                     human(entry.bytes),
@@ -86,13 +92,22 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
                 out.removed += 1;
             }
             Err(e) => {
-                writeln!(manifest, "ERROR\t{}\t{e}", escape_path(&r.path))?;
                 out.lines.push(format!(
                     "failed {} (may be partly removed): {e}",
                     escape_path(&r.path)
                 ));
                 out.failed += 1;
             }
+        }
+        // The removal already happened, so report it rather than erroring out; but with no
+        // working log there is no record of further deletions, so stop here.
+        if let Err(e) = logged {
+            out.lines.push(format!(
+                "stopped: {} not logged, manifest write failed: {e}",
+                escape_path(&r.path)
+            ));
+            out.failed += 1;
+            break;
         }
     }
     Ok(out)
@@ -206,5 +221,27 @@ mod tests {
         fs::write(&fx.manifest, "not a dir").unwrap();
         assert!(clean(&rows, &fx.ctx, true, &fx.manifest).is_err());
         assert!(rows[0].path.exists());
+    }
+
+    #[test]
+    fn manifest_write_failure_after_removal_is_reported_not_hidden() {
+        // disk full after the log was opened: the removal happened, so say so, and stop
+        let fx = fx();
+        let rows = [candidate(&fx, "a", "ok"), candidate(&fx, "b", "ok")];
+        fs::create_dir_all(&fx.manifest).unwrap();
+        let secs = fx.ctx.now.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        std::os::unix::fs::symlink("/dev/full", fx.manifest.join(format!("{secs}.log"))).unwrap();
+        let out = clean(&rows, &fx.ctx, true, &fx.manifest).unwrap();
+        assert_eq!(out.removed, 1);
+        assert!(
+            !rows[0].path.exists() && rows[1].path.exists(),
+            "stops after the log breaks"
+        );
+        assert!(out.failed >= 1);
+        assert!(
+            out.lines.iter().any(|l| l.contains("not logged")),
+            "{:?}",
+            out.lines
+        );
     }
 }

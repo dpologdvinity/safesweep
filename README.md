@@ -52,7 +52,7 @@ On WSL, only Linux processes are visible. If Task Manager shows `vmmem` busy but
 
 Every removal is logged to `~/.local/state/safesweep/<unix-time>.log`. If that log cannot be written, nothing is deleted.
 
-Exit codes: `0` success, `1` some removals failed, `2` bad usage.
+Exit codes: `0` success, `1` some removals failed or a runtime error (unreadable `/proc`, terminal failure, unwritable manifest), `2` bad usage (unknown category, unsafe `HOME` or `TMPDIR`).
 
 ## What makes a candidate safe
 
@@ -62,7 +62,7 @@ A candidate is skipped, with the reason shown, if any of these hold:
 - anything inside is owned by another user (unless run as root)
 - anything inside changed within the rule's age threshold (newer of mtime and ctime, so a tree unpacked with `tar` or `cp -p` today counts as new)
 - it contains a socket or FIFO (live tmux or X11 sockets don't show up as open files)
-- anything inside is open, memory-mapped, executing, or the working directory of any process
+- anything inside is open, memory-mapped, executing, or the working directory of one of your processes, including processes in containers or other mount namespaces (matched by inode, not by path). Other users' processes are only visible when run as root
 - it contains a `.git` directory (an editable install or git dependency can hold uncommitted work)
 - any part of it can't be read, it contains a read-only directory (deletion would stop halfway), or it is or contains a mount point
 - `/proc` can't be read, so open files can't be checked
@@ -89,7 +89,7 @@ Reported sizes count only files with a single hard link. uv hardlinks its cache 
 
 `pycache` and `artifacts` walk your home directory (skipping dot-directories), so they only run when named.
 
-`artifacts` only lists a build directory when its project has a marker file next to it (`package.json` for `node_modules`, `Cargo.toml` for `target`, `pyproject.toml`, `requirements.txt` or `setup.py` for `.venv`) and its git history is idle: nothing touched `.git/logs/HEAD` or `.git/index` for 30 days. Git activity includes other branches and linked worktrees. The build directory must also contain a file only the tool creates (`pyvenv.cfg`, `CACHEDIR.TAG`, `.package-lock.json`, ...), so a hand-made folder named `target` is never touched. The project directory must be unused by any process, not just the build directory, so a long-running service keeps its dependencies. Projects without `.git` and monorepo members without their own `.git` are never listed. Every normal safety check still applies, so a build directory used in the last 30 days is skipped even if nothing was committed.
+`artifacts` only lists a build directory when its project has a marker file next to it (`package.json` for `node_modules`, `Cargo.toml` for `target`, `pyproject.toml`, `requirements.txt` or `setup.py` for `.venv`) and its git history is idle: nothing touched `.git/logs/HEAD` or `.git/index` for 30 days. Git activity includes other branches and linked worktrees. The build directory must also contain a file only the tool creates (`pyvenv.cfg`, `CACHEDIR.TAG`, `.package-lock.json`, ...), so a hand-made folder named `target` is never touched. The project directory must be unused by any of your processes, not just the build directory, so a long-running service keeps its dependencies. Projects without `.git` and monorepo members without their own `.git` are never listed. Every normal safety check still applies, so a build directory used in the last 30 days is skipped even if nothing was committed.
 
 ## WSL
 

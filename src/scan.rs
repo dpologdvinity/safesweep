@@ -28,6 +28,8 @@ pub struct Entry {
     pub has_special: bool,
     /// The top path itself is a symlink.
     pub is_symlink: bool,
+    /// `(dev, inode)` of every entry, to match against what processes have open.
+    pub inodes: std::collections::HashSet<(u64, u64)>,
 }
 
 /// Candidate paths under `root`. A missing or unreadable root yields none.
@@ -54,8 +56,14 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
                 .into_iter();
             while let Some(entry) = walk.next() {
                 let Ok(entry) = entry else { continue };
-                if entry.file_type().is_dir() && entry.file_name() == *name {
+                if !entry.file_type().is_dir() {
+                    continue;
+                }
+                if entry.file_name() == *name {
                     out.push(entry.into_path());
+                    walk.skip_current_dir();
+                } else if entry.file_name().as_encoded_bytes().starts_with(b".") {
+                    // .cache, .rustup, .npm, ...: other rules own those, and walking them is slow
                     walk.skip_current_dir();
                 }
             }
@@ -184,6 +192,7 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
         owner: Some(top.uid()),
         has_special: false,
         is_symlink: top.file_type().is_symlink(),
+        inodes: Default::default(),
     };
     if e.is_symlink {
         return Ok(e);
@@ -204,6 +213,7 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
         if md.dev() != top.dev() {
             return Err(io::Error::other("contains a mount point"));
         }
+        e.inodes.insert((md.dev(), md.ino()));
         e.newest = e.newest.max(changed(&md)?);
         if e.owner != Some(md.uid()) {
             e.owner = None;
@@ -230,35 +240,41 @@ fn changed(md: &fs::Metadata) -> io::Result<SystemTime> {
 }
 
 /// Every mount point on the system, from `/proc/self/mountinfo`.
+/// Mount points from mountinfo bytes. Read as bytes: one mount point that is not valid UTF-8
+/// must not make every candidate unverifiable.
+fn parse_mountinfo(info: &[u8]) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    info.split(|&b| b == b'\n')
+        .filter_map(|l| l.split(|&b| b == b' ').nth(4))
+        .map(|m| PathBuf::from(std::ffi::OsString::from_vec(unescape(m))))
+        .collect()
+}
+
 pub fn mount_points() -> io::Result<Vec<PathBuf>> {
-    Ok(fs::read_to_string("/proc/self/mountinfo")?
-        .lines()
-        .filter_map(|l| l.split(' ').nth(4))
-        .map(|m| PathBuf::from(unescape(m)))
-        .collect())
+    Ok(parse_mountinfo(&fs::read("/proc/self/mountinfo")?))
 }
 
 /// Undo mountinfo's octal escapes (`\040` is a space).
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find('\\') {
-        out.push_str(&rest[..i]);
-        let code = rest
+fn unescape(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        let octal = s
             .get(i + 1..i + 4)
+            .and_then(|o| std::str::from_utf8(o).ok())
             .and_then(|o| u8::from_str_radix(o, 8).ok());
-        match code {
-            Some(b) => {
-                out.push(b as char);
-                rest = &rest[i + 4..];
+        match (s[i], octal) {
+            (b'\\', Some(b)) => {
+                out.push(b);
+                i += 4;
             }
-            None => {
-                out.push('\\');
-                rest = &rest[i + 1..];
+            (b, _) => {
+                out.push(b);
+                i += 1;
             }
         }
     }
-    out + rest
+    out
 }
 
 #[cfg(test)]
@@ -497,5 +513,27 @@ mod tests {
             r.err().map(|e| e.to_string()),
             Some("contains a .git directory".into())
         );
+    }
+
+    #[test]
+    fn find_named_dirs_skips_dot_dirs() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join(".hidden/__pycache__")).unwrap();
+        let shown = t.path().join("p/__pycache__");
+        fs::create_dir_all(&shown).unwrap();
+        assert_eq!(
+            find(t.path(), &Matcher::NamedDirs("__pycache__")),
+            vec![shown]
+        );
+    }
+
+    #[test]
+    fn parse_mountinfo_handles_escapes_and_bad_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let info =
+            b"36 35 98:0 / /mnt/a\\040b rw - ext3 /dev/x rw\n37 35 98:0 / /mnt/\xff rw - x y z\n";
+        let got = parse_mountinfo(info);
+        assert_eq!(got[0], PathBuf::from("/mnt/a b"));
+        assert_eq!(got[1].as_os_str().as_bytes(), b"/mnt/\xff");
     }
 }

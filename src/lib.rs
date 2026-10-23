@@ -14,12 +14,29 @@ pub mod why;
 pub mod wsl;
 
 /// Everything that depends on the environment, so tests can supply their own.
+#[derive(Clone)]
 pub struct Ctx {
     pub home: PathBuf,
     pub tmp: PathBuf,
     pub proc_root: PathBuf,
     pub euid: u32,
     pub now: SystemTime,
+}
+
+/// As root, every path under HOME is trusted, so HOME itself must belong to root:
+/// `sudo -E` keeps the invoking user's HOME, and that user could point `~/.cache` anywhere.
+pub fn check_root_home(euid: u32, home: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if euid != 0 {
+        return Ok(());
+    }
+    match std::fs::metadata(home) {
+        Ok(md) if md.uid() == 0 => Ok(()),
+        _ => Err(format!(
+            "refusing to run as root with HOME={} not owned by root (use `sudo -H`, or run as that user)",
+            home.display()
+        )),
+    }
 }
 
 impl Ctx {
@@ -29,6 +46,12 @@ impl Ctx {
             .filter(|h| !h.is_empty())
             .ok_or("HOME is not set")?;
         let home = PathBuf::from(home);
+        // a relative HOME would make every rule act on paths under the current directory
+        if !home.is_absolute() {
+            return Err("HOME must be an absolute path".into());
+        }
+        let euid = unsafe { libc::geteuid() };
+        check_root_home(euid, &home)?;
         // TMPDIR picks the tmp rule's root, so `.`, `/` or $HOME would sweep real data.
         let tmp = std::env::temp_dir();
         let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -42,7 +65,7 @@ impl Ctx {
             home,
             tmp,
             proc_root: "/proc".into(),
-            euid: unsafe { libc::geteuid() },
+            euid,
             now: SystemTime::now(),
         })
     }
@@ -83,7 +106,10 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                         Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
                     };
                     let (bytes, status) = match measured {
-                        Err(e) => (0, format!("skipped: {e}")),
+                        Err(e) => (
+                            0,
+                            format!("skipped: {}", render::escape_text(&e.to_string())),
+                        ),
                         Ok(e) => {
                             let verdict = guard::check(
                                 &path,
@@ -92,11 +118,14 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                                 &root,
                                 rule.min_age_days,
                                 ctx,
-                                live.as_deref(),
+                                live.as_ref(),
                             );
                             (
                                 e.bytes,
-                                verdict.map_or_else(|r| format!("skipped: {r}"), |()| "ok".into()),
+                                verdict.map_or_else(
+                                    |r| format!("skipped: {}", render::escape_text(&r)),
+                                    |()| "ok".into(),
+                                ),
                             )
                         }
                     };
@@ -229,5 +258,36 @@ mod tests {
             "{:?}",
             rows.iter().map(|r| &r.path).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn root_needs_root_owned_home() {
+        let t = tempfile::tempdir().unwrap(); // owned by the test user, never root in CI
+        let me = unsafe { libc::geteuid() };
+        if me == 0 {
+            return;
+        }
+        assert_eq!(check_root_home(me, t.path()), Ok(()));
+        let err = check_root_home(0, t.path()).unwrap_err();
+        assert!(err.contains("HOME") && err.contains("root"), "{err}");
+    }
+
+    #[test]
+    fn skip_reasons_from_io_errors_are_escaped() {
+        // another user can name an unreadable subdir so the error text fakes a table row
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let (home, tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let bad = tmp.path().join("c/x\nok 9.9 GiB fake");
+        fs::create_dir_all(&bad).unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o300)).unwrap();
+        let tmp_rule: Vec<_> = rules::RULES.iter().filter(|r| r.id == "tmp").collect();
+        let rows = collect(&tmp_rule, &ctx(home.path(), tmp.path()));
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].status.starts_with("skipped"), "{}", rows[0].status);
+        assert!(!rows[0].status.contains('\n'), "{:?}", rows[0].status);
     }
 }
