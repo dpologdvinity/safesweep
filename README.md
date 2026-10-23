@@ -12,7 +12,7 @@ Linux and WSL only.
 cargo install safesweep
 ```
 
-Or download a prebuilt static Linux x86_64 binary from the [releases page](https://github.com/dpologdvinity/safesweep/releases) (each tarball has a `.sha256` file next to it).
+Or download a prebuilt static Linux binary (x86_64 or aarch64) from the [releases page](https://github.com/dpologdvinity/safesweep/releases) (each tarball has a `.sha256` file next to it).
 
 ## Usage
 
