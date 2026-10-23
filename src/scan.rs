@@ -64,6 +64,11 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
 /// Size, age, ownership and special files of the tree at `path`.
 /// Any unreadable entry is an error: a tree we cannot fully see is not safe to delete.
 pub fn measure(path: &Path) -> io::Result<Entry> {
+    measure_with(path, &mount_points()?)
+}
+
+/// `measure` against a mount table read once by the caller (a scan measures hundreds of paths).
+pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
     let top = fs::symlink_metadata(path)?;
     let mut e = Entry {
         bytes: 0,
@@ -78,7 +83,7 @@ pub fn measure(path: &Path) -> io::Result<Entry> {
     // remove_dir_all would descend into a mounted filesystem, so refuse instead of skipping it.
     // st_dev misses bind mounts from the same filesystem and a candidate that is itself a mount.
     let canon = fs::canonicalize(path)?;
-    if mount_points()?.iter().any(|m| m.starts_with(&canon)) {
+    if mounts.iter().any(|m| m.starts_with(&canon)) {
         return Err(io::Error::other("contains a mount point"));
     }
     for entry in WalkDir::new(path).follow_links(false) {
@@ -112,7 +117,7 @@ fn changed(md: &fs::Metadata) -> io::Result<SystemTime> {
 }
 
 /// Every mount point on the system, from `/proc/self/mountinfo`.
-fn mount_points() -> io::Result<Vec<PathBuf>> {
+pub fn mount_points() -> io::Result<Vec<PathBuf>> {
     Ok(fs::read_to_string("/proc/self/mountinfo")?
         .lines()
         .filter_map(|l| l.split(' ').nth(4))

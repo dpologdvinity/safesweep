@@ -68,6 +68,7 @@ fn lossy<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
 /// Scan and guard every candidate of `rules`, largest first.
 pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
     let live = guard::in_use(&ctx.proc_root).ok();
+    let mounts = scan::mount_points();
     let mut rows: Vec<Row> = rules
         .par_iter()
         .flat_map_iter(|&rule| {
@@ -75,7 +76,11 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
             scan::find(&root, &rule.matcher)
                 .into_iter()
                 .map(|path| {
-                    let (bytes, status) = match scan::measure(&path) {
+                    let measured = match &mounts {
+                        Ok(m) => scan::measure_with(&path, m),
+                        Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
+                    };
+                    let (bytes, status) = match measured {
                         Err(e) => (0, format!("skipped: {e}")),
                         Ok(e) => {
                             let verdict = guard::check(
