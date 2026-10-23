@@ -52,7 +52,7 @@ On WSL, only Linux processes are visible. If Task Manager shows `vmmem` busy but
 
 Every removal is logged to `~/.local/state/safesweep/<unix-time>.log`. If that log cannot be written, nothing is deleted.
 
-Exit codes: `0` success, `1` some removals failed, `2` bad usage.
+Exit codes: `0` success, `1` some removals failed or a runtime error (unreadable `/proc`, terminal failure, unwritable manifest), `2` bad usage (unknown category, unsafe `HOME` or `TMPDIR`).
 
 ## What makes a candidate safe
 

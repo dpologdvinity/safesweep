@@ -56,8 +56,14 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
                 .into_iter();
             while let Some(entry) = walk.next() {
                 let Ok(entry) = entry else { continue };
-                if entry.file_type().is_dir() && entry.file_name() == *name {
+                if !entry.file_type().is_dir() {
+                    continue;
+                }
+                if entry.file_name() == *name {
                     out.push(entry.into_path());
+                    walk.skip_current_dir();
+                } else if entry.file_name().as_encoded_bytes().starts_with(b".") {
+                    // .cache, .rustup, .npm, ...: other rules own those, and walking them is slow
                     walk.skip_current_dir();
                 }
             }
@@ -500,6 +506,18 @@ mod tests {
         assert_eq!(
             r.err().map(|e| e.to_string()),
             Some("contains a .git directory".into())
+        );
+    }
+
+    #[test]
+    fn find_named_dirs_skips_dot_dirs() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join(".hidden/__pycache__")).unwrap();
+        let shown = t.path().join("p/__pycache__");
+        fs::create_dir_all(&shown).unwrap();
+        assert_eq!(
+            find(t.path(), &Matcher::NamedDirs("__pycache__")),
+            vec![shown]
         );
     }
 }

@@ -54,9 +54,18 @@ fn main() -> ExitCode {
     })
 }
 
+/// Exit 1: the command was valid but something on the system failed. Exit 2 is for bad usage.
+fn runtime_error(msg: &str) -> ExitCode {
+    eprintln!("error: {msg}");
+    ExitCode::from(1)
+}
+
 fn run(cli: Cli) -> Result<ExitCode, String> {
     let cmd = cli.cmd.unwrap_or(Cmd::Scan { json: false });
     if let Cmd::Why { interval_ms, top } = cmd {
+        if !cli.categories.is_empty() {
+            return Err("--category does not apply to why".into());
+        }
         return why(interval_ms, top);
     }
     let ctx = Ctx::from_env()?;
@@ -66,7 +75,10 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             return Err("tui needs an interactive terminal".into());
         }
         let dir = ctx.home.join(".local/state/safesweep");
-        let failed = tui::run(&selected, &ctx, &dir).map_err(|e| format!("terminal error: {e}"))?;
+        let failed = match tui::run(&selected, &ctx, &dir) {
+            Ok(failed) => failed,
+            Err(e) => return Ok(runtime_error(&format!("terminal error: {e}"))),
+        };
         return Ok(if failed {
             ExitCode::from(1)
         } else {
@@ -116,10 +128,16 @@ fn why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
         return Err("--interval-ms must be at least 100".into());
     }
     let proc_root = Path::new("/proc");
-    let err = |e: std::io::Error| format!("cannot read /proc: {e}");
-    let a = why::sample(proc_root).map_err(err)?;
+    let err = |e: std::io::Error| runtime_error(&format!("cannot read /proc: {e}"));
+    let a = match why::sample(proc_root) {
+        Ok(s) => s,
+        Err(e) => return Ok(err(e)),
+    };
     std::thread::sleep(Duration::from_millis(interval_ms));
-    let b = why::sample(proc_root).map_err(err)?;
+    let b = match why::sample(proc_root) {
+        Ok(s) => s,
+        Err(e) => return Ok(err(e)),
+    };
     let r = why::diff(&a, &b);
     let mut out = String::new();
     let _ = writeln!(

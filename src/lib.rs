@@ -45,6 +45,10 @@ impl Ctx {
             .filter(|h| !h.is_empty())
             .ok_or("HOME is not set")?;
         let home = PathBuf::from(home);
+        // a relative HOME would make every rule act on paths under the current directory
+        if !home.is_absolute() {
+            return Err("HOME must be an absolute path".into());
+        }
         let euid = unsafe { libc::geteuid() };
         check_root_home(euid, &home)?;
         // TMPDIR picks the tmp rule's root, so `.`, `/` or $HOME would sweep real data.

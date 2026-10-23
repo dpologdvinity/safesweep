@@ -382,3 +382,31 @@ fn in_use_seen_through_other_mount_namespace() {
     child.wait().unwrap();
     assert_eq!(got["proj/__pycache__"], "skipped: in use by a process");
 }
+
+#[test]
+fn relative_home_exits_2() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .env("HOME", "rel")
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8_lossy(&out).contains("HOME must be an absolute path"));
+}
+
+#[test]
+fn category_with_why_is_an_error() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .args(["--category", "pip", "why"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8_lossy(&out).contains("--category does not apply to why"));
+}
