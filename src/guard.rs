@@ -25,15 +25,22 @@ pub fn in_use(proc_root: &Path) -> io::Result<Vec<PathBuf>> {
         out.extend(fs::read_link(dir.join("cwd")));
         out.extend(fs::read_link(dir.join("exe")));
         if let Ok(maps) = fs::read_to_string(dir.join("maps")) {
-            out.extend(
-                maps.lines()
-                    .filter_map(|l| l.split_whitespace().nth(5))
-                    .filter(|p| p.starts_with('/'))
-                    .map(PathBuf::from),
-            );
+            out.extend(maps.lines().filter_map(map_path));
         }
     }
     Ok(out)
+}
+
+/// Path column of one `/proc/<pid>/maps` line, if it names a file.
+/// The path is everything after the 5th field, so it may contain spaces.
+fn map_path(line: &str) -> Option<PathBuf> {
+    let mut rest = line;
+    for _ in 0..5 {
+        rest = rest.trim_start().split_once(char::is_whitespace)?.1;
+    }
+    let path = rest.trim_start();
+    let path = path.strip_suffix(" (deleted)").unwrap_or(path);
+    path.starts_with('/').then(|| PathBuf::from(path))
 }
 
 /// `Ok(())` if the candidate is safe to delete, else the reason to skip it.
@@ -52,6 +59,11 @@ pub fn check(
     let root = fs::canonicalize(root).map_err(|e| format!("cannot resolve rule root: {e}"))?;
     if !canon.starts_with(&root) {
         return Err("outside rule root".into());
+    }
+    // As root, /proc shows PrivateTmp services' and containers' paths in their own mount
+    // namespace, so their live tmp files cannot be matched against host paths.
+    if ctx.euid == 0 && fs::canonicalize(&ctx.tmp).is_ok_and(|t| canon.starts_with(t)) {
+        return Err("tmp is not cleaned as root".into());
     }
     if ctx.euid != 0 && entry.owner != Some(ctx.euid) {
         return Err("owned by another user".into());
@@ -93,31 +105,24 @@ mod tests {
 
     const DAY: Duration = Duration::from_secs(86400);
 
+    /// "Now" is 10 days ahead: ctime cannot be backdated, so fixtures age by moving the clock.
     fn ctx() -> Ctx {
         Ctx {
             home: PathBuf::new(),
             tmp: PathBuf::new(),
             proc_root: PathBuf::from("/proc"),
             euid: unsafe { libc::geteuid() },
-            now: SystemTime::now(),
+            now: SystemTime::now() + DAY * 10,
         }
     }
 
-    /// Root dir containing candidate `c/f`, everything aged 10 days.
+    /// Root dir containing candidate `c/f`.
     fn fixture() -> (tempfile::TempDir, PathBuf) {
         let t = tempfile::tempdir().unwrap();
         let c = t.path().join("c");
         fs::create_dir(&c).unwrap();
         fs::write(c.join("f"), "x").unwrap();
-        age(&c, 10);
         (t, c)
-    }
-
-    fn age(path: &Path, days: u32) {
-        let when = FileTime::from_system_time(SystemTime::now() - DAY * days);
-        for e in walkdir::WalkDir::new(path).contents_first(true) {
-            set_file_mtime(e.unwrap().path(), when).unwrap();
-        }
     }
 
     fn run(c: &Path, root: &Path, days: u64, ctx: &Ctx) -> Result<(), String> {
@@ -168,11 +173,51 @@ mod tests {
     #[test]
     fn skips_recent() {
         let (t, c) = fixture();
-        age(&c.join("f"), 1);
+        let mut today = ctx();
+        today.now = SystemTime::now();
         assert_eq!(
-            run(&c, t.path(), 7, &ctx()),
+            run(&c, t.path(), 7, &today),
             Err("modified within 7 days".into())
         );
+    }
+
+    #[test]
+    fn skips_backdated_mtime() {
+        // tar, cp -p and rsync -a keep old mtimes; ctime still shows the extraction
+        let (t, c) = fixture();
+        let old = FileTime::from_system_time(SystemTime::now() - DAY * 30);
+        set_file_mtime(c.join("f"), old).unwrap();
+        set_file_mtime(&c, old).unwrap();
+        let mut today = ctx();
+        today.now = SystemTime::now();
+        assert_eq!(
+            run(&c, t.path(), 7, &today),
+            Err("modified within 7 days".into())
+        );
+    }
+
+    #[test]
+    fn skips_tmp_as_root() {
+        // as root, /proc paths of PrivateTmp services and containers don't match host paths
+        let (t, c) = fixture();
+        let mut root = ctx();
+        root.euid = 0;
+        root.tmp = t.path().into();
+        assert_eq!(
+            run(&c, t.path(), 7, &root),
+            Err("tmp is not cleaned as root".into())
+        );
+    }
+
+    #[test]
+    fn map_path_keeps_spaces() {
+        let line = "7f00-7f01 r--p 00000000 08:20 1234      /t/a b/lib.so (deleted)";
+        assert_eq!(map_path(line), Some(PathBuf::from("/t/a b/lib.so")));
+        assert_eq!(
+            map_path("7f00-7f01 r--p 00000000 00:00 0      [heap]"),
+            None
+        );
+        assert_eq!(map_path("7f00-7f01 r--p 00000000 00:00 0"), None);
     }
 
     #[test]

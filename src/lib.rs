@@ -26,9 +26,19 @@ impl Ctx {
         let home = std::env::var_os("HOME")
             .filter(|h| !h.is_empty())
             .ok_or("HOME is not set")?;
+        let home = PathBuf::from(home);
+        // TMPDIR picks the tmp rule's root, so `.`, `/` or $HOME would sweep real data.
+        let tmp = std::env::temp_dir();
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if !tmp.is_absolute() || real(&tmp) == Path::new("/") || real(&home).starts_with(real(&tmp))
+        {
+            return Err(
+                "TMPDIR must be an absolute path that is not / and does not contain HOME".into(),
+            );
+        }
         Ok(Ctx {
-            home: home.into(),
-            tmp: std::env::temp_dir(),
+            home,
+            tmp,
             proc_root: "/proc".into(),
             euid: unsafe { libc::geteuid() },
             now: SystemTime::now(),
@@ -128,7 +138,8 @@ mod tests {
             tmp: tmp.into(),
             proc_root: "/proc".into(),
             euid: unsafe { libc::geteuid() },
-            now: SystemTime::now(),
+            // ctime cannot be backdated, so age fixtures by moving the clock instead
+            now: SystemTime::now() + Duration::from_secs(86400 * 10),
         }
     }
 

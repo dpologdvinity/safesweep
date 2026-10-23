@@ -45,9 +45,9 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         .create(true)
         .append(true)
         .open(manifest_dir.join(format!("{secs}.log")))?;
-    // shortcut: one /proc snapshot per run, not per file; take a fresh one per candidate if races show up.
-    let live = in_use(&ctx.proc_root).ok();
     for r in ok {
+        // Fresh /proc snapshot per candidate: a run-wide one goes stale while big trees are deleted.
+        let live = in_use(&ctx.proc_root).ok();
         let root = r.rule.root_path(ctx);
         let fresh = measure(&r.path).map_err(|e| e.to_string()).and_then(|e| {
             check(
@@ -98,7 +98,6 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
 mod tests {
     use super::*;
     use crate::rules::RULES;
-    use filetime::{FileTime, set_file_mtime};
     use std::fs::{self, File};
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -117,7 +116,8 @@ mod tests {
             tmp: tmp.path().join("t"),
             proc_root: "/proc".into(),
             euid: unsafe { libc::geteuid() },
-            now: SystemTime::now(),
+            // ctime cannot be backdated, so age fixtures by moving the clock instead
+            now: SystemTime::now() + Duration::from_secs(86400 * 10),
         };
         fs::create_dir(&ctx.tmp).unwrap();
         let manifest = tmp.path().join("state");
@@ -132,9 +132,6 @@ mod tests {
         let path = fx.ctx.tmp.join(name);
         fs::create_dir(&path).unwrap();
         fs::write(path.join("f"), vec![1u8; 4096]).unwrap();
-        let when = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400 * 10));
-        set_file_mtime(path.join("f"), when).unwrap();
-        set_file_mtime(&path, when).unwrap();
         Row {
             category: "tmp",
             path,

@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 /// Which paths under a rule root are candidates.
@@ -67,7 +67,7 @@ pub fn measure(path: &Path) -> io::Result<Entry> {
     let top = fs::symlink_metadata(path)?;
     let mut e = Entry {
         bytes: 0,
-        newest: top.modified()?,
+        newest: changed(&top)?,
         owner: Some(top.uid()),
         has_special: false,
         is_symlink: top.file_type().is_symlink(),
@@ -75,17 +75,26 @@ pub fn measure(path: &Path) -> io::Result<Entry> {
     if e.is_symlink {
         return Ok(e);
     }
+    // remove_dir_all would descend into a mounted filesystem, so refuse instead of skipping it.
+    // st_dev misses bind mounts from the same filesystem and a candidate that is itself a mount.
+    let canon = fs::canonicalize(path)?;
+    if mount_points()?.iter().any(|m| m.starts_with(&canon)) {
+        return Err(io::Error::other("contains a mount point"));
+    }
     for entry in WalkDir::new(path).follow_links(false) {
         let md = entry?.metadata()?;
-        // remove_dir_all would descend into a mounted filesystem, so refuse instead of skipping it.
         if md.dev() != top.dev() {
             return Err(io::Error::other("contains a mount point"));
         }
-        e.newest = e.newest.max(md.modified()?);
+        e.newest = e.newest.max(changed(&md)?);
         if e.owner != Some(md.uid()) {
             e.owner = None;
         }
         let ft = md.file_type();
+        // remove_dir_all would fail partway through and leave a half-deleted tree.
+        if ft.is_dir() && md.mode() & 0o200 == 0 {
+            return Err(io::Error::other("contains a read-only directory"));
+        }
         if ft.is_socket() || ft.is_fifo() {
             e.has_special = true;
         }
@@ -94,6 +103,44 @@ pub fn measure(path: &Path) -> io::Result<Entry> {
         }
     }
     Ok(e)
+}
+
+/// Newer of mtime and ctime. tar, `cp -p` and `rsync -a` backdate mtime; nobody can backdate ctime.
+fn changed(md: &fs::Metadata) -> io::Result<SystemTime> {
+    let ctime = UNIX_EPOCH + Duration::new(md.ctime().max(0) as u64, md.ctime_nsec() as u32);
+    Ok(md.modified()?.max(ctime))
+}
+
+/// Every mount point on the system, from `/proc/self/mountinfo`.
+fn mount_points() -> io::Result<Vec<PathBuf>> {
+    Ok(fs::read_to_string("/proc/self/mountinfo")?
+        .lines()
+        .filter_map(|l| l.split(' ').nth(4))
+        .map(|m| PathBuf::from(unescape(m)))
+        .collect())
+}
+
+/// Undo mountinfo's octal escapes (`\040` is a space).
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        let code = rest
+            .get(i + 1..i + 4)
+            .and_then(|o| u8::from_str_radix(o, 8).ok());
+        match code {
+            Some(b) => {
+                out.push(b as char);
+                rest = &rest[i + 4..];
+            }
+            None => {
+                out.push('\\');
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    out + rest
 }
 
 #[cfg(test)]
@@ -160,26 +207,36 @@ mod tests {
     }
 
     #[test]
-    fn measure_newest_is_max_mtime() {
+    fn measure_newest_includes_ctime() {
+        // mtimes backdated (as tar/cp -p/rsync -a do) must not make a fresh tree look old
         let t = tempfile::tempdir().unwrap();
         let now = SystemTime::now();
         let day = Duration::from_secs(86400);
-        fs::write(t.path().join("old"), "x").unwrap();
-        fs::write(t.path().join("new"), "x").unwrap();
-        set_file_mtime(
-            t.path().join("old"),
-            FileTime::from_system_time(now - day * 10),
-        )
-        .unwrap();
-        set_file_mtime(
-            t.path().join("new"),
-            FileTime::from_system_time(now - day * 2),
-        )
-        .unwrap();
-        set_file_mtime(t.path(), FileTime::from_system_time(now - day * 20)).unwrap();
+        fs::write(t.path().join("f"), "x").unwrap();
+        let old = FileTime::from_system_time(now - day * 10);
+        set_file_mtime(t.path().join("f"), old).unwrap();
+        set_file_mtime(t.path(), old).unwrap();
         let newest = measure(t.path()).unwrap().newest;
-        let age = now.duration_since(newest).unwrap();
-        assert!(age >= day * 2 - Duration::from_secs(2) && age <= day * 2 + Duration::from_secs(2));
+        assert!(
+            newest + Duration::from_secs(60) >= now,
+            "newest is ctime, not the backdated mtime"
+        );
+    }
+
+    #[test]
+    fn measure_refuses_read_only_dir() {
+        // remove_dir_all would fail partway through and leave a half-deleted tree
+        let t = tempfile::tempdir().unwrap();
+        let sub = t.path().join("ro");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("f"), "x").unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+        let r = measure(t.path());
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            r.err().map(|e| e.to_string()),
+            Some("contains a read-only directory".into())
+        );
     }
 
     #[test]
