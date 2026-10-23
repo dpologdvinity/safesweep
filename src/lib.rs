@@ -63,17 +63,8 @@ pub struct Row {
 }
 
 // serde_json rejects non-UTF-8 paths, and a file name must never break the output.
-// Invalid bytes become `\xNN` so two different bad names never print the same.
 fn lossy<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut out = String::new();
-    for chunk in path.as_os_str().as_bytes().utf8_chunks() {
-        out.push_str(chunk.valid());
-        for b in chunk.invalid() {
-            out.push_str(&format!("\\x{b:02x}"));
-        }
-    }
-    s.serialize_str(&out)
+    s.serialize_str(&render::escape_path(path))
 }
 
 /// Scan and guard every candidate of `rules`, largest first.

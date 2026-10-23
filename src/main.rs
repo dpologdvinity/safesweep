@@ -66,8 +66,12 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             return Err("tui needs an interactive terminal".into());
         }
         let dir = ctx.home.join(".local/state/safesweep");
-        tui::run(&selected, &ctx, &dir).map_err(|e| format!("terminal error: {e}"))?;
-        return Ok(ExitCode::SUCCESS);
+        let failed = tui::run(&selected, &ctx, &dir).map_err(|e| format!("terminal error: {e}"))?;
+        return Ok(if failed {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        });
     }
     let rows = collect(&selected, &ctx);
     match cmd {

@@ -1,5 +1,5 @@
 use crate::guard::{check, in_use};
-use crate::render::human;
+use crate::render::{escape_path, human};
 use crate::scan::measure;
 use crate::{Ctx, Row};
 use std::fs::{self, OpenOptions};
@@ -29,7 +29,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
             out.lines.push(format!(
                 "would remove {} {}",
                 human(r.bytes),
-                r.path.display()
+                escape_path(&r.path)
             ));
         }
         return Ok(out);
@@ -65,7 +65,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
             Ok(e) => e,
             Err(reason) => {
                 out.lines
-                    .push(format!("skipped {}: {reason}", r.path.display()));
+                    .push(format!("skipped {}: {reason}", escape_path(&r.path)));
                 continue;
             }
         };
@@ -76,20 +76,20 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         };
         match removed {
             Ok(()) => {
-                writeln!(manifest, "{}\t{}", entry.bytes, r.path.display())?;
+                writeln!(manifest, "{}\t{}", entry.bytes, escape_path(&r.path))?;
                 out.lines.push(format!(
                     "removed {} {}",
                     human(entry.bytes),
-                    r.path.display()
+                    escape_path(&r.path)
                 ));
                 out.freed += entry.bytes;
                 out.removed += 1;
             }
             Err(e) => {
-                writeln!(manifest, "ERROR\t{}\t{e}", r.path.display())?;
+                writeln!(manifest, "ERROR\t{}\t{e}", escape_path(&r.path))?;
                 out.lines.push(format!(
                     "failed {} (may be partly removed): {e}",
-                    r.path.display()
+                    escape_path(&r.path)
                 ));
                 out.failed += 1;
             }
@@ -175,7 +175,7 @@ mod tests {
         assert!(rows[1].path.exists());
         assert_eq!((out.removed, out.failed), (1, 0));
         assert!(out.freed > 0);
-        let line = format!("{}\t{}\n", out.freed, rows[0].path.display());
+        let line = format!("{}\t{}\n", out.freed, escape_path(&rows[0].path));
         assert_eq!(manifest_text(&fx.manifest), line);
     }
 
