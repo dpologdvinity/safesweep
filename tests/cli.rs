@@ -254,3 +254,19 @@ fn missing_home_exits_2() {
         .clone();
     assert!(String::from_utf8_lossy(&out).contains("error: HOME is not set"));
 }
+
+#[test]
+fn why_reports_cpu() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .args(["why", "--interval-ms", "200"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.starts_with("CPU busy: "), "{out}");
+    assert!(out.contains("PROGRAM"), "{out}");
+}

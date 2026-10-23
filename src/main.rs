@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 use safesweep::render::{self, human};
-use safesweep::{Ctx, clean, collect, rules, wsl};
+use safesweep::{Ctx, clean, collect, rules, why, wsl};
+use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 use std::{env, fs};
 
 /// Clean caches and temp files that are provably safe to delete.
@@ -29,6 +31,15 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Show which processes and programs are using the CPU
+    Why {
+        /// How long to sample
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+        /// How many processes to list
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
 }
 
 fn main() -> ExitCode {
@@ -39,9 +50,14 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode, String> {
+    let cmd = cli.cmd.unwrap_or(Cmd::Scan { json: false });
+    if let Cmd::Why { interval_ms, top } = cmd {
+        return why(interval_ms, top);
+    }
     let ctx = Ctx::from_env()?;
     let rows = collect(&rules::select(&cli.categories)?, &ctx);
-    match cli.cmd.unwrap_or(Cmd::Scan { json: false }) {
+    match cmd {
+        Cmd::Why { .. } => unreachable!("handled above"),
         Cmd::Scan { json: true } => println!("{}", render::json(&rows)),
         Cmd::Scan { json: false } => print!("{}", render::table(&rows)),
         Cmd::Clean { apply } => {
@@ -71,6 +87,50 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 return Ok(ExitCode::from(1));
             }
         }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
+    let proc_root = Path::new("/proc");
+    let err = |e: std::io::Error| format!("cannot read /proc: {e}");
+    let a = why::sample(proc_root).map_err(err)?;
+    std::thread::sleep(Duration::from_millis(interval_ms));
+    let b = why::sample(proc_root).map_err(err)?;
+    let r = why::diff(&a, &b);
+    println!(
+        "CPU busy: {:.0}% of {} cores (sampled {:.1}s)",
+        r.busy_pct,
+        r.ncpu,
+        interval_ms as f64 / 1000.0
+    );
+    println!("\nPROGRAM               CPU%  PROCS");
+    for (comm, pct, n) in why::by_program(&r.procs).iter().take(top) {
+        println!("{comm:<20} {pct:>6.1}  {n:>5}");
+    }
+    println!("\n    PID   CPU%  COMMAND");
+    for u in r.procs.iter().take(top) {
+        let cmdline = fs::read(proc_root.join(u.pid.to_string()).join("cmdline"))
+            .map(|b| {
+                String::from_utf8_lossy(&b)
+                    .replace('\0', " ")
+                    .trim()
+                    .to_string()
+            })
+            .ok()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| format!("[{}]", u.comm));
+        let cmdline: String = cmdline.chars().take(100).collect();
+        println!("{:>7} {:>6.1}  {cmdline}", u.pid, u.pct);
+    }
+    if r.procs.is_empty() {
+        println!("(no process used measurable CPU)");
+    }
+    if fs::read_to_string(proc_root.join("version")).is_ok_and(|v| wsl::is_wsl(&v)) {
+        println!(
+            "\nWSL: only Linux processes are visible here. If Task Manager shows vmmem busy\n\
+             but this list is quiet, the load is on the Windows side."
+        );
     }
     Ok(ExitCode::SUCCESS)
 }
