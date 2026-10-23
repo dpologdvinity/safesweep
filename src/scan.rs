@@ -28,6 +28,8 @@ pub struct Entry {
     pub has_special: bool,
     /// The top path itself is a symlink.
     pub is_symlink: bool,
+    /// `(dev, inode)` of every entry, to match against what processes have open.
+    pub inodes: std::collections::HashSet<(u64, u64)>,
 }
 
 /// Candidate paths under `root`. A missing or unreadable root yields none.
@@ -184,6 +186,7 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
         owner: Some(top.uid()),
         has_special: false,
         is_symlink: top.file_type().is_symlink(),
+        inodes: Default::default(),
     };
     if e.is_symlink {
         return Ok(e);
@@ -204,6 +207,7 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
         if md.dev() != top.dev() {
             return Err(io::Error::other("contains a mount point"));
         }
+        e.inodes.insert((md.dev(), md.ino()));
         e.newest = e.newest.max(changed(&md)?);
         if e.owner != Some(md.uid()) {
             e.owner = None;

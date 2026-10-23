@@ -1,14 +1,36 @@
 use crate::Ctx;
 use crate::scan::Entry;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Every path a process holds open, maps, runs, or uses as its cwd.
+/// What running processes are using, gathered once from `/proc`.
+pub struct InUse {
+    /// Targets of fd/cwd/exe links and mapped files, as text in each process's own view.
+    pub paths: Vec<PathBuf>,
+    /// The same objects as `(dev, inode)`. Paths of a process in another mount namespace
+    /// (podman, `unshare -m`, PrivateTmp) are written in its own view and never match host
+    /// paths; the inode does.
+    pub inodes: HashSet<(u64, u64)>,
+}
+
+/// Every file a process holds open, maps, runs, or uses as its cwd.
 /// Errs only if `proc_root` itself is unreadable; unreadable processes are ignored.
-pub fn in_use(proc_root: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
+pub fn in_use(proc_root: &Path) -> io::Result<InUse> {
+    let mut out = InUse {
+        paths: Vec::new(),
+        inodes: HashSet::new(),
+    };
+    let link = |p: PathBuf, out: &mut InUse| {
+        out.paths.extend(fs::read_link(&p));
+        // stat on a /proc magic link follows it to the real object, whatever namespace it lives in
+        if let Ok(md) = fs::metadata(&p) {
+            out.inodes.insert((md.dev(), md.ino()));
+        }
+    };
     for pid in fs::read_dir(proc_root)?.flatten() {
         if !pid
             .file_name()
@@ -20,15 +42,30 @@ pub fn in_use(proc_root: &Path) -> io::Result<Vec<PathBuf>> {
         }
         let dir = pid.path();
         for fd in fs::read_dir(dir.join("fd")).into_iter().flatten().flatten() {
-            out.extend(fs::read_link(fd.path()));
+            link(fd.path(), &mut out);
         }
-        out.extend(fs::read_link(dir.join("cwd")));
-        out.extend(fs::read_link(dir.join("exe")));
+        link(dir.join("cwd"), &mut out);
+        link(dir.join("exe"), &mut out);
         if let Ok(maps) = fs::read_to_string(dir.join("maps")) {
-            out.extend(maps.lines().filter_map(map_path));
+            for line in maps.lines() {
+                out.paths.extend(map_path(line));
+                out.inodes.extend(map_inode(line));
+            }
         }
     }
     Ok(out)
+}
+
+/// `(dev, inode)` of one `/proc/<pid>/maps` line: fields 4 (`major:minor` in hex) and 5.
+fn map_inode(line: &str) -> Option<(u64, u64)> {
+    let mut f = line.split_whitespace().skip(3);
+    let (major, minor) = f.next()?.split_once(':')?;
+    let ino: u64 = f.next()?.parse().ok()?;
+    let (major, minor) = (
+        u32::from_str_radix(major, 16).ok()?,
+        u32::from_str_radix(minor, 16).ok()?,
+    );
+    (ino != 0).then(|| (libc::makedev(major, minor) as u64, ino))
 }
 
 /// Path column of one `/proc/<pid>/maps` line, if it names a file.
@@ -53,7 +90,7 @@ pub fn check(
     root: &Path,
     min_age_days: u64,
     ctx: &Ctx,
-    in_use: Option<&[PathBuf]>,
+    in_use: Option<&InUse>,
 ) -> Result<(), String> {
     if entry.is_symlink {
         return Err("symlink".into());
@@ -82,10 +119,14 @@ pub fn check(
         return Err("cannot verify open files".into());
     };
     let scope = canonical(scope).map_err(|e| format!("cannot resolve path: {e}"))?;
-    if in_use
+    let scope_inode = fs::metadata(&scope).ok().map(|m| (m.dev(), m.ino()));
+    let by_path = in_use
+        .paths
         .iter()
-        .any(|p| p.starts_with(&canon) || p.starts_with(&scope))
-    {
+        .any(|p| p.starts_with(&canon) || p.starts_with(&scope));
+    let by_inode = scope_inode.is_some_and(|i| in_use.inodes.contains(&i))
+        || entry.inodes.iter().any(|i| in_use.inodes.contains(i));
+    if by_path || by_inode {
         return Err("in use by a process".into());
     }
     Ok(())
@@ -301,5 +342,15 @@ mod tests {
     fn in_use_errs_on_missing_proc_root() {
         let t = tempfile::tempdir().unwrap();
         assert!(in_use(&t.path().join("noproc")).is_err());
+    }
+
+    #[test]
+    fn map_inode_parses_dev_and_inode() {
+        let line = "7f00-7f01 r--p 00000000 08:20 1234      /t/a b/lib.so";
+        assert_eq!(map_inode(line), Some((libc::makedev(8, 0x20) as u64, 1234)));
+        assert_eq!(
+            map_inode("7f00-7f01 r--p 00000000 00:00 0      [heap]"),
+            None
+        );
     }
 }

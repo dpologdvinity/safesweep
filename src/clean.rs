@@ -57,7 +57,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
                 &root,
                 r.rule.min_age_days,
                 ctx,
-                live.as_deref(),
+                live.as_ref(),
             )
             .map(|()| e)
         });

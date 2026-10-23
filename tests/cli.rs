@@ -342,3 +342,43 @@ fn tui_needs_a_terminal() {
         .clone();
     assert!(String::from_utf8_lossy(&out).contains("error: tui needs an interactive terminal"));
 }
+
+#[test]
+fn in_use_seen_through_other_mount_namespace() {
+    // podman / unshare -m: the process sees the candidate under another path (/mnt here),
+    // so path text in /proc never matches; only the inode does.
+    let fx = Fx::new();
+    let live = fx.home.path().join("proj/__pycache__");
+    let mnt = fx.home.path().join("mnt");
+    fs::create_dir(&mnt).unwrap();
+    let ok = std::process::Command::new("unshare")
+        .args(["-rm", "true"])
+        .status();
+    if !ok.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: unshare -rm unavailable");
+        return;
+    }
+    let mut child = std::process::Command::new("unshare")
+        .args([
+            "-rm",
+            "sh",
+            "-c",
+            r#"mount --bind "$0" "$1" && cd "$1" && echo ready && exec sleep 30"#,
+        ])
+        .arg(&live)
+        .arg(&mnt)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+        &mut line,
+    )
+    .unwrap();
+    assert_eq!(line.trim(), "ready");
+    let got = fx.statuses(&["--category", "pycache"]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(got["proj/__pycache__"], "skipped: in use by a process");
+}

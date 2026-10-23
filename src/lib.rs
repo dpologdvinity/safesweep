@@ -92,7 +92,7 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                                 &root,
                                 rule.min_age_days,
                                 ctx,
-                                live.as_deref(),
+                                live.as_ref(),
                             );
                             (
                                 e.bytes,
