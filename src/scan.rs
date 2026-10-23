@@ -65,10 +65,29 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
 }
 
 /// Directory name -> files that must sit next to it for it to count as that tool's artifact.
-const ARTIFACTS: [(&str, &[&str]); 3] = [
-    ("node_modules", &["package.json"]),
-    ("target", &["Cargo.toml"]),
-    (".venv", &["pyproject.toml", "requirements.txt", "setup.py"]),
+/// Each also needs a file inside that only the tool itself creates, so a user's own directory
+/// of the same name (or `.venv/src/<pkg>` editable checkouts' parent) is never taken for build output.
+const ARTIFACTS: [(&str, &[&str], &[&str]); 3] = [
+    (
+        "node_modules",
+        &["package.json"],
+        &[
+            ".package-lock.json",
+            ".yarn-integrity",
+            ".yarn-state.yml",
+            ".modules.yaml",
+        ],
+    ),
+    (
+        "target",
+        &["Cargo.toml"],
+        &["CACHEDIR.TAG", ".rustc_info.json"],
+    ),
+    (
+        ".venv",
+        &["pyproject.toml", "requirements.txt", "setup.py"],
+        &["pyvenv.cfg"],
+    ),
 ];
 const IDLE_DAYS: u64 = 30;
 const MAX_DEPTH: usize = 6;
@@ -82,7 +101,9 @@ fn idle_artifacts(root: &Path) -> Vec<PathBuf> {
         .min_depth(1)
         .max_depth(MAX_DEPTH)
         .into_iter();
-    while let Some(Ok(entry)) = walk.next() {
+    while let Some(entry) = walk.next() {
+        // an unreadable directory must not end the whole walk
+        let Ok(entry) = entry else { continue };
         if !entry.file_type().is_dir() {
             continue;
         }
@@ -106,21 +127,42 @@ fn is_artifact(entry: &walkdir::DirEntry) -> bool {
         return false;
     };
     let name = entry.file_name().to_string_lossy();
-    ARTIFACTS
+    ARTIFACTS.iter().any(|(dir, markers, fingerprints)| {
+        *dir == name
+            && markers.iter().any(|m| project.join(m).is_file())
+            && fingerprints.iter().any(|f| entry.path().join(f).exists())
+    })
+}
+
+/// Newest mtime of the files git touches on commit, checkout and fetch: in the main checkout,
+/// on any branch, and in linked worktrees (commits there never touch the main `logs/HEAD`).
+fn git_activity(git: &Path) -> Option<SystemTime> {
+    let mtime = |p: PathBuf| fs::metadata(p).and_then(|m| m.modified()).ok();
+    let mut newest = ["logs/HEAD", "index", "FETCH_HEAD"]
         .iter()
-        .any(|(dir, markers)| *dir == name && markers.iter().any(|m| project.join(m).is_file()))
+        .filter_map(|f| mtime(git.join(f)))
+        .max();
+    let refs = WalkDir::new(git.join("logs/refs"))
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file());
+    for e in refs {
+        newest = newest.max(mtime(e.into_path()));
+    }
+    for wt in fs::read_dir(git.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        newest = newest.max(mtime(wt.path().join("logs/HEAD")));
+        newest = newest.max(mtime(wt.path().join("index")));
+    }
+    newest
 }
 
 /// True if the project's last git activity is older than `IDLE_DAYS`. No `.git` means unknown, so not idle.
 fn project_idle(project: &Path) -> bool {
-    let activity = [".git/logs/HEAD", ".git/index"]
-        .iter()
-        .filter_map(|f| {
-            fs::metadata(project.join(f))
-                .and_then(|m| m.modified())
-                .ok()
-        })
-        .max();
+    let activity = git_activity(&project.join(".git"));
     activity.is_some_and(|t| {
         SystemTime::now().duration_since(t).unwrap_or_default()
             > Duration::from_secs(IDLE_DAYS * 86400)
@@ -153,7 +195,12 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
         return Err(io::Error::other("contains a mount point"));
     }
     for entry in WalkDir::new(path).follow_links(false) {
-        let md = entry?.metadata()?;
+        let entry = entry?;
+        // A nested checkout (editable pip install, git dependency) may hold uncommitted user work.
+        if entry.file_name() == ".git" {
+            return Err(io::Error::other("contains a .git directory"));
+        }
+        let md = entry.metadata()?;
         if md.dev() != top.dev() {
             return Err(io::Error::other("contains a mount point"));
         }
@@ -352,6 +399,13 @@ mod tests {
     ) -> PathBuf {
         let p = root.join(name);
         fs::create_dir_all(p.join(artifact)).unwrap();
+        // a real tool leaves a fingerprint inside; user-made dirs of the same name don't
+        let fingerprint = match artifact {
+            ".venv" => "pyvenv.cfg",
+            "target" => "CACHEDIR.TAG",
+            _ => ".package-lock.json",
+        };
+        fs::write(p.join(artifact).join(fingerprint), "x").unwrap();
         fs::write(p.join(marker), "x").unwrap();
         if let Some(days) = git_days {
             fs::create_dir_all(p.join(".git/logs")).unwrap();
@@ -395,5 +449,53 @@ mod tests {
         let nm = project(t.path(), "web", "package.json", "node_modules", Some(60));
         project(&nm, "inner", "package.json", "node_modules", Some(60));
         assert_eq!(find(t.path(), &Matcher::IdleArtifacts), vec![nm]);
+    }
+
+    #[test]
+    fn idle_artifacts_requires_tool_fingerprint() {
+        let t = tempfile::tempdir().unwrap();
+        let ours = project(t.path(), "py", "pyproject.toml", ".venv", Some(60));
+        fs::remove_file(ours.join("pyvenv.cfg")).unwrap(); // hand-made .venv: could be user code
+        assert!(find(t.path(), &Matcher::IdleArtifacts).is_empty());
+    }
+
+    #[test]
+    fn idle_artifacts_sees_worktree_and_branch_activity() {
+        let t = tempfile::tempdir().unwrap();
+        let recent = |p: PathBuf| {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        };
+        let a = project(t.path(), "a", "package.json", "node_modules", Some(60));
+        recent(a.parent().unwrap().join(".git/worktrees/w/logs/HEAD"));
+        let b = project(t.path(), "b", "package.json", "node_modules", Some(60));
+        recent(b.parent().unwrap().join(".git/logs/refs/heads/feature"));
+        assert!(find(t.path(), &Matcher::IdleArtifacts).is_empty());
+    }
+
+    #[test]
+    fn idle_artifacts_walk_survives_unreadable_dir() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let bad = t.path().join("aaa");
+        fs::create_dir(&bad).unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
+        let want = project(t.path(), "zzz", "package.json", "node_modules", Some(60));
+        let got = find(t.path(), &Matcher::IdleArtifacts);
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(got, vec![want]);
+    }
+
+    #[test]
+    fn measure_refuses_tree_containing_git() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("src/pkg/.git")).unwrap();
+        let r = measure(t.path());
+        assert_eq!(
+            r.err().map(|e| e.to_string()),
+            Some("contains a .git directory".into())
+        );
     }
 }

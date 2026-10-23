@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use safesweep::render::{self, human};
 use safesweep::{Ctx, clean, collect, rules, why, wsl};
+use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -92,23 +94,29 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
 }
 
 fn why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
+    // Sampling a zero-length window prints made-up numbers.
+    if interval_ms < 100 {
+        return Err("--interval-ms must be at least 100".into());
+    }
     let proc_root = Path::new("/proc");
     let err = |e: std::io::Error| format!("cannot read /proc: {e}");
     let a = why::sample(proc_root).map_err(err)?;
     std::thread::sleep(Duration::from_millis(interval_ms));
     let b = why::sample(proc_root).map_err(err)?;
     let r = why::diff(&a, &b);
-    println!(
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
         "CPU busy: {:.0}% of {} cores (sampled {:.1}s)",
         r.busy_pct,
         r.ncpu,
         interval_ms as f64 / 1000.0
     );
-    println!("\nPROGRAM               CPU%  PROCS");
+    let _ = writeln!(out, "\nPROGRAM               CPU%  PROCS");
     for (comm, pct, n) in why::by_program(&r.procs).iter().take(top) {
-        println!("{comm:<20} {pct:>6.1}  {n:>5}");
+        let _ = writeln!(out, "{comm:<20} {pct:>6.1}  {n:>5}");
     }
-    println!("\n    PID   CPU%  COMMAND");
+    let _ = writeln!(out, "\n    PID   CPU%  COMMAND");
     for u in r.procs.iter().take(top) {
         let cmdline = fs::read(proc_root.join(u.pid.to_string()).join("cmdline"))
             .map(|b| {
@@ -121,16 +129,19 @@ fn why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
             .filter(|c| !c.is_empty())
             .unwrap_or_else(|| format!("[{}]", u.comm));
         let cmdline: String = cmdline.chars().take(100).collect();
-        println!("{:>7} {:>6.1}  {cmdline}", u.pid, u.pct);
+        let _ = writeln!(out, "{:>7} {:>6.1}  {cmdline}", u.pid, u.pct);
     }
     if r.procs.is_empty() {
-        println!("(no process used measurable CPU)");
+        let _ = writeln!(out, "(no process used measurable CPU)");
     }
     if fs::read_to_string(proc_root.join("version")).is_ok_and(|v| wsl::is_wsl(&v)) {
-        println!(
+        let _ = writeln!(
+            out,
             "\nWSL: only Linux processes are visible here. If Task Manager shows vmmem busy\n\
              but this list is quiet, the load is on the Windows side."
         );
     }
+    // Ignore write errors: `safesweep why | head` closes the pipe early, and that is not a crash.
+    let _ = std::io::stdout().write_all(out.as_bytes());
     Ok(ExitCode::SUCCESS)
 }

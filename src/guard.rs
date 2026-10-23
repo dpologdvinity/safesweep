@@ -44,8 +44,11 @@ fn map_path(line: &str) -> Option<PathBuf> {
 }
 
 /// `Ok(())` if the candidate is safe to delete, else the reason to skip it.
+/// `scope` is the directory that must be unused by any process: the candidate itself, or for
+/// build artifacts their project (a running service has its cwd there, not inside `node_modules`).
 pub fn check(
     path: &Path,
+    scope: &Path,
     entry: &Entry,
     root: &Path,
     min_age_days: u64,
@@ -78,7 +81,11 @@ pub fn check(
     let Some(in_use) = in_use else {
         return Err("cannot verify open files".into());
     };
-    if in_use.iter().any(|p| p.starts_with(&canon)) {
+    let scope = canonical(scope).map_err(|e| format!("cannot resolve path: {e}"))?;
+    if in_use
+        .iter()
+        .any(|p| p.starts_with(&canon) || p.starts_with(&scope))
+    {
         return Err("in use by a process".into());
     }
     Ok(())
@@ -127,7 +134,7 @@ mod tests {
 
     fn run(c: &Path, root: &Path, days: u64, ctx: &Ctx) -> Result<(), String> {
         let live = in_use(&ctx.proc_root).unwrap();
-        check(c, &measure(c).unwrap(), root, days, ctx, Some(&live))
+        check(c, c, &measure(c).unwrap(), root, days, ctx, Some(&live))
     }
 
     #[test]
@@ -256,9 +263,37 @@ mod tests {
     }
 
     #[test]
+    fn scope_widens_in_use_check_to_project() {
+        // a service whose cwd is the project (not the artifact) still needs its dependencies
+        let (t, c) = fixture();
+        let project = t.path().join("proj");
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .current_dir(&project)
+            .spawn()
+            .unwrap();
+        let nm = project.join("node_modules");
+        let live = in_use(&PathBuf::from("/proc")).unwrap();
+        let r = check(
+            &nm,
+            &project,
+            &measure(&nm).unwrap(),
+            t.path(),
+            0,
+            &ctx(),
+            Some(&live),
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let _ = c;
+        assert_eq!(r, Err("in use by a process".into()));
+    }
+
+    #[test]
     fn skips_without_proc() {
         let (t, c) = fixture();
-        let r = check(&c, &measure(&c).unwrap(), t.path(), 7, &ctx(), None);
+        let r = check(&c, &c, &measure(&c).unwrap(), t.path(), 7, &ctx(), None);
         assert_eq!(r, Err("cannot verify open files".into()));
     }
 
