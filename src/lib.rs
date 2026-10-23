@@ -20,6 +20,22 @@ pub struct Ctx {
     pub now: SystemTime,
 }
 
+impl Ctx {
+    pub fn from_env() -> Result<Ctx, String> {
+        // An empty HOME would make `Root::Home("")` the current directory.
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .ok_or("HOME is not set")?;
+        Ok(Ctx {
+            home: home.into(),
+            tmp: std::env::temp_dir(),
+            proc_root: "/proc".into(),
+            euid: unsafe { libc::geteuid() },
+            now: SystemTime::now(),
+        })
+    }
+}
+
 /// One candidate as shown by `scan` and acted on by `clean`.
 #[derive(Serialize)]
 pub struct Row {
