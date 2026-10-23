@@ -1,6 +1,33 @@
 use crate::Row;
 use crate::rules::Regen;
 
+/// A path as safe to print: control characters (newlines would fake extra rows) and bidi
+/// overrides become escapes, and invalid UTF-8 bytes become `\xNN`.
+pub fn escape_path(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = String::new();
+    for chunk in path.as_os_str().as_bytes().utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match c {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                // control characters, and bidi marks/overrides that reorder text on screen
+                c if c.is_control()
+                    || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
+                {
+                    out.push_str(&format!("\\u{{{:x}}}", c as u32));
+                }
+                c => out.push(c),
+            }
+        }
+        for b in chunk.invalid() {
+            out.push_str(&format!("\\x{b:02x}"));
+        }
+    }
+    out
+}
+
 /// Binary-unit size: `"512 B"`, `"1.5 KiB"`.
 pub fn human(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -30,7 +57,7 @@ pub fn table(rows: &[Row]) -> String {
                     human(r.bytes),
                     regen(r.regen).to_string(),
                     r.status.clone(),
-                    r.path.display().to_string(),
+                    escape_path(&r.path),
                 ]
             }))
             .collect();
@@ -105,5 +132,23 @@ mod tests {
         // invalid bytes are escaped (not replaced), so distinct names stay distinct
         assert_eq!(v[0]["path"], "bad\\xff");
         assert!(table(&rows).contains("bad"));
+    }
+
+    #[test]
+    fn escape_path_hides_newlines_bidi_and_bad_bytes() {
+        let p = |b: &[u8]| escape_path(std::path::Path::new(OsStr::from_bytes(b)));
+        assert_eq!(p(b"/plain/ok.txt"), "/plain/ok.txt");
+        assert_eq!(p(b"x\n[ ] fake"), "x\\n[ ] fake");
+        assert_eq!(p(b"a\r\tb"), "a\\r\\tb");
+        assert_eq!(p(b"bad\xff"), "bad\\xff");
+        assert_eq!(p("a\u{202e}b".as_bytes()), "a\\u{202e}b");
+        assert_eq!(p("a\x1b[31mb".as_bytes()), "a\\u{1b}[31mb");
+        assert_eq!(p("naïve/日本".as_bytes()), "naïve/日本");
+    }
+
+    #[test]
+    fn table_cannot_be_spoofed_by_newline_in_name() {
+        let rows = [row(PathBuf::from("/t/x\n[ ] 9.9 GiB fake"), 1, "ok")];
+        assert_eq!(table(&rows).lines().count(), 3); // header, one row, total
     }
 }

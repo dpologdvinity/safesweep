@@ -1,4 +1,4 @@
-use crate::render::human;
+use crate::render::{escape_path, human};
 use crate::rules::Rule;
 use crate::{Ctx, Row, clean, collect};
 use ratatui::Frame;
@@ -23,6 +23,8 @@ pub struct App {
     pub selected: BTreeSet<usize>,
     pub confirming: bool,
     pub message: String,
+    /// Set when a delete failed or could not start; makes `run` report failure.
+    pub failed: bool,
 }
 
 impl App {
@@ -35,6 +37,7 @@ impl App {
             selected: BTreeSet::new(),
             confirming: false,
             message: String::new(),
+            failed: false,
         }
     }
 
@@ -74,16 +77,41 @@ impl App {
             .map(|&i| self.rows[i].clone())
             .collect();
         self.message = match clean::clean(&chosen, ctx, true, manifest_dir) {
-            Ok(o) => format!(
-                "freed {} ({} removed, {} failed)",
-                human(o.freed),
-                o.removed,
-                o.failed
-            ),
-            Err(e) => format!(
-                "nothing deleted: cannot write manifest in {}: {e}",
-                manifest_dir.display()
-            ),
+            Ok(o) => {
+                let skipped: Vec<&String> = o
+                    .lines
+                    .iter()
+                    .filter(|l| l.starts_with("skipped"))
+                    .collect();
+                self.failed |= o.failed > 0;
+                let mut msg = format!(
+                    "freed {} ({} removed, {} failed",
+                    human(o.freed),
+                    o.removed,
+                    o.failed
+                );
+                if !skipped.is_empty() {
+                    msg += &format!(", {} skipped", skipped.len());
+                }
+                msg.push(')');
+                // the first row that did not go, with its reason, so a failure is never silent
+                match o
+                    .lines
+                    .iter()
+                    .find(|l| l.starts_with("failed"))
+                    .or(skipped.first().copied())
+                {
+                    Some(line) => format!("{msg}  {line}"),
+                    None => msg,
+                }
+            }
+            Err(e) => {
+                self.failed = true;
+                format!(
+                    "nothing deleted: cannot write manifest in {}: {e}",
+                    manifest_dir.display()
+                )
+            }
         };
         self.rows = collect(rules, ctx);
         self.selected.clear();
@@ -146,6 +174,21 @@ fn bar(bytes: u64, max: u64) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled))
 }
 
+/// The key an event stands for, if any: only plain presses count, so Ctrl-D or a held key
+/// cannot open or confirm the delete prompt, and Ctrl-C quits.
+pub fn translate(key: ratatui::crossterm::event::KeyEvent) -> Option<KeyCode> {
+    use ratatui::crossterm::event::KeyModifiers;
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
+        return Some(KeyCode::Esc);
+    }
+    (key.modifiers - KeyModifiers::SHIFT)
+        .is_empty()
+        .then_some(key.code)
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [list_area, status_area, help_area] = Layout::vertical([
         Constraint::Fill(1),
@@ -175,7 +218,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 human(r.bytes),
                 bar(r.bytes, max),
                 r.category,
-                r.path.display()
+                escape_path(&r.path)
             );
             ListItem::new(text).style(if ok {
                 Style::new()
@@ -219,17 +262,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
 }
 
-/// Runs the interactive explorer until the user quits.
-pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Result<()> {
+/// Runs the interactive explorer until the user quits. Returns whether any delete failed.
+pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Result<bool> {
     let mut app = App::new(collect(rules, ctx));
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init()?;
     let result = (|| loop {
         terminal.draw(|f| draw(f, &mut app))?;
         if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && app.handle_key(key.code, ctx, rules, manifest_dir) == Action::Quit
+            && let Some(code) = translate(key)
+            && app.handle_key(code, ctx, rules, manifest_dir) == Action::Quit
         {
-            return Ok(());
+            return Ok(app.failed);
         }
     })();
     ratatui::restore();
@@ -419,5 +462,83 @@ mod tests {
         a.handle_key(KeyCode::Char('d'), &c, &rules, &t.path().join("state"));
         assert!(!a.confirming);
         assert_eq!(a.message, "nothing selected");
+    }
+
+    #[test]
+    fn draw_cannot_be_spoofed_by_newline_in_name() {
+        let mut a = App::new(vec![row(
+            "x\n[ ]   9.9 GiB ████████████ tmp  /fake",
+            1,
+            "ok",
+        )]);
+        let s = screen(&mut a);
+        let lines: Vec<String> = s
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(110)
+            .map(|c| c.iter().collect())
+            .collect();
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("/fake")).count(),
+            1,
+            "{s}"
+        );
+        assert!(s.contains("x\\n[ ]"), "{s}");
+    }
+
+    #[test]
+    fn delete_reports_what_the_recheck_skipped() {
+        let (t, c, rules, _) = fixture();
+        let dir = t.path().join("state");
+        let mut a = App::new(collect(&rules, &c));
+        a.handle_key(KeyCode::Char(' '), &c, &rules, &dir);
+        let _held = fs::File::open(c.tmp.join("t/f")).unwrap(); // becomes busy after the scan
+        for k in [KeyCode::Char('d'), KeyCode::Char('y')] {
+            a.handle_key(k, &c, &rules, &dir);
+        }
+        assert!(c.tmp.join("t").exists());
+        assert!(a.message.contains("1 skipped"), "{}", a.message);
+        assert!(a.message.contains("in use by a process"), "{}", a.message);
+        assert!(!a.failed);
+    }
+
+    #[test]
+    fn unwritable_manifest_deletes_nothing_and_counts_as_failure() {
+        let (t, c, rules, _) = fixture();
+        let dir = t.path().join("state");
+        fs::write(&dir, "not a dir").unwrap();
+        let mut a = App::new(collect(&rules, &c));
+        for k in [KeyCode::Char(' '), KeyCode::Char('d'), KeyCode::Char('y')] {
+            a.handle_key(k, &c, &rules, &dir);
+        }
+        assert!(c.tmp.join("t").exists());
+        assert!(a.message.contains("nothing deleted"), "{}", a.message);
+        assert!(a.failed);
+    }
+
+    #[test]
+    fn translate_ignores_modified_keys_and_releases() {
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyModifiers};
+        let k = |code, mods| KeyEvent::new(code, mods);
+        assert_eq!(
+            translate(k(KeyCode::Char('d'), KeyModifiers::NONE)),
+            Some(KeyCode::Char('d'))
+        );
+        assert_eq!(
+            translate(k(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Some(KeyCode::Char('A'))
+        );
+        assert_eq!(
+            translate(k(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(KeyCode::Esc)
+        );
+        assert_eq!(
+            translate(k(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(translate(k(KeyCode::Char('y'), KeyModifiers::ALT)), None);
+        let mut release = k(KeyCode::Char('q'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(translate(release), None);
     }
 }
