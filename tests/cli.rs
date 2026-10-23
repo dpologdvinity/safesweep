@@ -410,3 +410,55 @@ fn category_with_why_is_an_error() {
         .clone();
     assert!(String::from_utf8_lossy(&out).contains("--category does not apply to why"));
 }
+
+#[test]
+fn completions_for_each_shell() {
+    let fx = Fx::new();
+    for (shell, marker) in [
+        ("bash", "complete -F"),
+        ("zsh", "#compdef safesweep"),
+        ("fish", "complete -c safesweep"),
+    ] {
+        let out = fx
+            .cmd()
+            .args(["completions", shell])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let out = String::from_utf8_lossy(&out);
+        assert!(out.contains(marker), "{shell}: {out}");
+        assert!(
+            out.contains("artifacts") || out.contains("clean"),
+            "{shell} lists subcommands"
+        );
+    }
+    fx.cmd()
+        .args(["completions", "nosuchshell"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn man_page_is_roff() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .arg("man")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8_lossy(&out);
+    assert!(
+        out.starts_with(".ie") || out.starts_with(".TH"),
+        "{}",
+        &out[..out.len().min(80)]
+    );
+    assert!(
+        out.contains("safesweep") && out.contains("clean"),
+        "mentions the command and subcommands"
+    );
+}
