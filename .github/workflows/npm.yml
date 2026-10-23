@@ -1,13 +1,12 @@
 name: Publish to npm
 
-# Called by the release workflow once the binaries are uploaded, or run by hand for an
-# existing release (without rebuilding, and so without changing, the release binaries).
+# Runs after "Release binaries" succeeds (the npm packages are built from those binaries), or by
+# hand for an existing release without rebuilding, and so without changing, the binaries.
+# A top-level workflow, not a reusable one: npm trusted publishing checks this file's name.
 on:
-  workflow_call:
-    inputs:
-      tag:
-        type: string
-        required: true
+  workflow_run:
+    workflows: ["Release binaries"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -20,23 +19,28 @@ permissions:
 
 jobs:
   publish:
+    # a hand-run "Release binaries" is not tied to a release tag, so only follow release-triggered runs
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release')
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ inputs.tag }}
+      # for a release-triggered run, head_branch is the release tag
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      # setup-node puts a placeholder in NODE_AUTH_TOKEN when the secret is empty, so test the secret itself
-      HAVE_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.TAG }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: 24 # trusted publishing needs npm >= 11.5.1
           registry-url: https://registry.npmjs.org
       - name: Publish
         run: |
-          if [ "$HAVE_NPM_TOKEN" != true ]; then echo "::notice::NPM_TOKEN secret not set; skipping npm publish"; exit 0; fi
+          # Uses npm trusted publishing (OIDC) when it is configured on npmjs.com; NPM_TOKEN, if set,
+          # is only a fallback and can be deleted once trusted publishing works.
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::not a release tag: $TAG"; exit 1 ;; esac
           out=$(mktemp -d)
           npm/build.sh "$TAG" "$out"
           # platform packages first, so the launcher's optionalDependencies resolve
