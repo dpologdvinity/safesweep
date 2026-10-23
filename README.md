@@ -23,6 +23,15 @@ npm install -g safesweep                    # or: pnpm add -g / yarn global add 
 nix run github:dpologdvinity/safesweep      # Nix flake
 ```
 
+On Debian or Ubuntu (including WSL), add the apt repository once and get updates with `apt upgrade`:
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://dpologdvinity.github.io/safesweep/key.asc | sudo tee /etc/apt/keyrings/safesweep.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/safesweep.asc] https://dpologdvinity.github.io/safesweep stable main" | sudo tee /etc/apt/sources.list.d/safesweep.list
+sudo apt update && sudo apt install safesweep
+```
+
 Debian/Ubuntu and Fedora packages, and static Linux binaries for x86_64 and aarch64 (each with a `.sha256`), are on the [releases page](https://github.com/dpologdvinity/safesweep/releases):
 
 ```sh
