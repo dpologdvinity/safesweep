@@ -96,7 +96,12 @@ pub fn check(
         return Err("symlink".into());
     }
     let canon = canonical(path).map_err(|e| format!("cannot resolve path: {e}"))?;
-    let root = fs::canonicalize(root).map_err(|e| format!("cannot resolve rule root: {e}"))?;
+    let resolved = fs::canonicalize(root).map_err(|e| format!("cannot resolve rule root: {e}"))?;
+    // As root nothing else bounds deletion, so the rule root must be where it says it is.
+    if ctx.euid == 0 && resolved != root {
+        return Err("rule root is a symlink (refused as root)".into());
+    }
+    let root = resolved;
     if !canon.starts_with(&root) {
         return Err("outside rule root".into());
     }
@@ -352,5 +357,25 @@ mod tests {
             map_inode("7f00-7f01 r--p 00000000 00:00 0      [heap]"),
             None
         );
+    }
+
+    #[test]
+    fn root_refuses_symlinked_rule_root() {
+        // as root, ~/.cache -> /var/lib would make system dirs look like cache entries
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        fs::create_dir_all(real.join("c")).unwrap();
+        fs::write(real.join("c/f"), "x").unwrap();
+        let link = t.path().join("link");
+        symlink(&real, &link).unwrap();
+        let c = link.join("c");
+        let mut root = ctx();
+        root.euid = 0;
+        assert_eq!(
+            run(&c, &link, 7, &root),
+            Err("rule root is a symlink (refused as root)".into())
+        );
+        // a normal user may symlink their own ~/.cache
+        assert_eq!(run(&c, &link, 7, &ctx()), Ok(()));
     }
 }

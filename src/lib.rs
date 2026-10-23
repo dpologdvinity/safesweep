@@ -22,6 +22,22 @@ pub struct Ctx {
     pub now: SystemTime,
 }
 
+/// As root, every path under HOME is trusted, so HOME itself must belong to root:
+/// `sudo -E` keeps the invoking user's HOME, and that user could point `~/.cache` anywhere.
+pub fn check_root_home(euid: u32, home: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if euid != 0 {
+        return Ok(());
+    }
+    match std::fs::metadata(home) {
+        Ok(md) if md.uid() == 0 => Ok(()),
+        _ => Err(format!(
+            "refusing to run as root with HOME={} not owned by root (use `sudo -H`, or run as that user)",
+            home.display()
+        )),
+    }
+}
+
 impl Ctx {
     pub fn from_env() -> Result<Ctx, String> {
         // An empty HOME would make `Root::Home("")` the current directory.
@@ -29,6 +45,8 @@ impl Ctx {
             .filter(|h| !h.is_empty())
             .ok_or("HOME is not set")?;
         let home = PathBuf::from(home);
+        let euid = unsafe { libc::geteuid() };
+        check_root_home(euid, &home)?;
         // TMPDIR picks the tmp rule's root, so `.`, `/` or $HOME would sweep real data.
         let tmp = std::env::temp_dir();
         let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -42,7 +60,7 @@ impl Ctx {
             home,
             tmp,
             proc_root: "/proc".into(),
-            euid: unsafe { libc::geteuid() },
+            euid,
             now: SystemTime::now(),
         })
     }
@@ -229,5 +247,17 @@ mod tests {
             "{:?}",
             rows.iter().map(|r| &r.path).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn root_needs_root_owned_home() {
+        let t = tempfile::tempdir().unwrap(); // owned by the test user, never root in CI
+        let me = unsafe { libc::geteuid() };
+        if me == 0 {
+            return;
+        }
+        assert_eq!(check_root_home(me, t.path()), Ok(()));
+        let err = check_root_home(0, t.path()).unwrap_err();
+        assert!(err.contains("HOME") && err.contains("root"), "{err}");
     }
 }
