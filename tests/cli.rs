@@ -88,10 +88,29 @@ fn scan_json_statuses() {
             "skipped: modified within 7 days".into(),
         ),
         (".cache/held".into(), "skipped: in use by a process".into()),
-        ("proj/__pycache__".into(), "ok".into()),
         ("stale".into(), "ok".into()),
     ]);
     assert_eq!(got, want);
+}
+
+#[test]
+fn pycache_is_opt_in() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .args(["--category", "pycache", "scan", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        fx.rel(rows[0]["path"].as_str().unwrap()),
+        "proj/__pycache__"
+    );
+    assert_eq!(rows[0]["status"], "ok");
 }
 
 #[test]
@@ -107,17 +126,14 @@ fn clean_dry_run_then_apply() {
         .stdout
         .clone();
     assert!(String::from_utf8_lossy(&dry).contains("would free"));
-    assert!(
-        h.join(".cache/old").exists()
-            && h.join("proj/__pycache__").exists()
-            && t.join("stale").exists()
-    );
+    assert!(h.join(".cache/old").exists() && t.join("stale").exists());
 
     fx.cmd().args(["clean", "--apply"]).assert().success();
     assert!(!h.join(".cache/old").exists());
-    assert!(!h.join("proj/__pycache__").exists());
     assert!(!t.join("stale").exists());
     assert!(h.join(".cache/fresh").exists() && h.join(".cache/held").exists());
+    // opt-in rule: untouched by a default clean
+    assert!(h.join("proj/__pycache__").exists());
 
     let logs: Vec<_> = fs::read_dir(h.join(".local/state/safesweep"))
         .unwrap()
@@ -129,7 +145,7 @@ fn clean_dry_run_then_apply() {
         .map(|l| fx.rel(l.split('\t').nth(1).unwrap()))
         .collect();
     removed.sort();
-    assert_eq!(removed, [".cache/old", "proj/__pycache__", "stale"]);
+    assert_eq!(removed, [".cache/old", "stale"]);
 }
 
 #[test]

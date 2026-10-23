@@ -25,6 +25,8 @@ pub struct Rule {
     pub matcher: Matcher,
     pub min_age_days: u64,
     pub regen: Regen,
+    /// Left out of the default set; runs only when named with `--category`.
+    pub opt_in: bool,
 }
 
 impl Rule {
@@ -45,6 +47,7 @@ pub static RULES: &[Rule] = &[
         },
         min_age_days: 7,
         regen: Regen::Network,
+        opt_in: false,
     },
     Rule {
         id: "pip",
@@ -52,6 +55,7 @@ pub static RULES: &[Rule] = &[
         matcher: Matcher::Whole,
         min_age_days: 1,
         regen: Regen::Network,
+        opt_in: false,
     },
     Rule {
         id: "uv",
@@ -59,6 +63,7 @@ pub static RULES: &[Rule] = &[
         matcher: Matcher::Whole,
         min_age_days: 1,
         regen: Regen::Network,
+        opt_in: false,
     },
     Rule {
         id: "npm",
@@ -66,6 +71,7 @@ pub static RULES: &[Rule] = &[
         matcher: Matcher::Whole,
         min_age_days: 1,
         regen: Regen::Network,
+        opt_in: false,
     },
     Rule {
         id: "cargo",
@@ -73,14 +79,16 @@ pub static RULES: &[Rule] = &[
         matcher: Matcher::Whole,
         min_age_days: 1,
         regen: Regen::Network,
+        opt_in: false,
     },
-    // shortcut: walks all of $HOME single-threaded per rule; switch to jwalk if scans of large homes are slow.
+    // Opt-in: walking all of $HOME took 9+ minutes on a dev box with millions of files.
     Rule {
         id: "pycache",
         root: Root::Home(""),
         matcher: Matcher::NamedDirs("__pycache__"),
         min_age_days: 0,
         regen: Regen::Free,
+        opt_in: true,
     },
     Rule {
         id: "tmp",
@@ -88,13 +96,14 @@ pub static RULES: &[Rule] = &[
         matcher: Matcher::Children { exclude: &[] },
         min_age_days: 7,
         regen: Regen::Free,
+        opt_in: false,
     },
 ];
 
-/// Rules with the given ids, or all rules if `ids` is empty.
+/// Rules with the given ids, or every non-opt-in rule if `ids` is empty.
 pub fn select(ids: &[String]) -> Result<Vec<&'static Rule>, String> {
     if ids.is_empty() {
-        return Ok(RULES.iter().collect());
+        return Ok(RULES.iter().filter(|r| !r.opt_in).collect());
     }
     ids.iter()
         .map(|id| {
@@ -111,8 +120,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn select_all_when_empty() {
-        assert_eq!(select(&[]).unwrap().len(), 7);
+    fn select_default_skips_opt_in() {
+        let ids: Vec<_> = select(&[]).unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["xdg-cache", "pip", "uv", "npm", "cargo", "tmp"]);
+    }
+
+    #[test]
+    fn select_opt_in_by_name() {
+        let ids: Vec<_> = select(&["pycache".into()])
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["pycache"]);
     }
 
     #[test]

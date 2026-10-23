@@ -158,7 +158,8 @@ mod tests {
         fs::create_dir_all(h.join("p/__pycache__")).unwrap();
         fs::write(h.join("p/__pycache__/a.pyc"), "x").unwrap();
 
-        let rows = collect(&rules::select(&[]).unwrap(), &ctx(h, tmp.path()));
+        let all: Vec<_> = rules::RULES.iter().collect();
+        let rows = collect(&all, &ctx(h, tmp.path()));
         let ok = |c: &str, p: &str| (c.to_string(), p.to_string(), "ok".to_string());
         assert_eq!(
             summary(&rows, h),
@@ -178,7 +179,8 @@ mod tests {
         fs::write(h.join(".cache/old/__pycache__/a.pyc"), "x").unwrap();
         age(&h.join(".cache"), 10);
 
-        let rows = collect(&rules::select(&[]).unwrap(), &ctx(h, tmp.path()));
+        let all: Vec<_> = rules::RULES.iter().collect();
+        let rows = collect(&all, &ctx(h, tmp.path()));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].category, "xdg-cache");
     }
