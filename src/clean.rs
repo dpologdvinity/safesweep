@@ -86,7 +86,10 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
             }
             Err(e) => {
                 writeln!(manifest, "ERROR\t{}\t{e}", r.path.display())?;
-                out.lines.push(format!("failed {}: {e}", r.path.display()));
+                out.lines.push(format!(
+                    "failed {} (may be partly removed): {e}",
+                    r.path.display()
+                ));
                 out.failed += 1;
             }
         }

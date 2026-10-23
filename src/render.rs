@@ -101,7 +101,9 @@ mod tests {
     #[test]
     fn json_non_utf8_path() {
         let rows = [row(PathBuf::from(OsStr::from_bytes(b"bad\xff")), 1, "ok")];
-        assert!(json(&rows).contains("bad"));
+        let v: serde_json::Value = serde_json::from_str(&json(&rows)).unwrap();
+        // invalid bytes are escaped (not replaced), so distinct names stay distinct
+        assert_eq!(v[0]["path"], "bad\\xff");
         assert!(table(&rows).contains("bad"));
     }
 }
