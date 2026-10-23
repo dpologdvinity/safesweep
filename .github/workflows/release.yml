@@ -50,7 +50,14 @@ jobs:
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" safesweep-*.tar.gz safesweep-*.tar.gz.sha256 safesweep*.deb safesweep*.rpm --clobber
+        # Never replace an asset: a rebuild is not byte-identical, and Homebrew and the apt repo
+        # pin the checksums of what was published first.
+        run: |
+          existing=$(gh release view "$TAG" --json assets -q '.assets[].name')
+          for f in safesweep-*.tar.gz safesweep-*.tar.gz.sha256 safesweep*.deb safesweep*.rpm; do
+            if grep -qxF "$f" <<<"$existing"; then echo "keeping existing $f"; continue; fi
+            gh release upload "$TAG" "$f"
+          done
 
   # Signed apt repository on GitHub Pages (gh-pages branch), rebuilt from this release's .debs.
   apt:
