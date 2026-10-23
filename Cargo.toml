@@ -5,6 +5,7 @@ edition = "2024"
 description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/dpologdvinity/safesweep"
 keywords = ["cache", "cleanup", "disk", "wsl", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 
