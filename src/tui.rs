@@ -25,10 +25,13 @@ pub struct App {
     pub message: String,
     /// Set when a delete failed or could not start; makes `run` report failure.
     pub failed: bool,
+    /// Rows left out because they belong to other users (never deletable, only clutter).
+    pub hidden: usize,
 }
 
 impl App {
     pub fn new(rows: Vec<Row>) -> App {
+        let (rows, hidden) = shown(rows);
         let mut state = ListState::default();
         state.select((!rows.is_empty()).then_some(0));
         App {
@@ -38,6 +41,7 @@ impl App {
             confirming: false,
             message: String::new(),
             failed: false,
+            hidden,
         }
     }
 
@@ -113,7 +117,7 @@ impl App {
                 )
             }
         };
-        self.rows = collect(rules, ctx);
+        (self.rows, self.hidden) = shown(collect(rules, ctx));
         self.selected.clear();
         let keep = self
             .state
@@ -163,6 +167,18 @@ impl App {
     }
 }
 
+/// Rows owned by other users can never be deleted; listing them only buries the real candidates
+/// (and lets another user fill the list with junk names in `/tmp`). Returns the rest and the count.
+fn shown(rows: Vec<Row>) -> (Vec<Row>, usize) {
+    let total = rows.len();
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .filter(|r| r.status != "skipped: owned by another user")
+        .collect();
+    let hidden = total - rows.len();
+    (rows, hidden)
+}
+
 const BAR: usize = 12;
 
 fn bar(bytes: u64, max: u64) -> String {
@@ -189,6 +205,25 @@ pub fn translate(key: ratatui::crossterm::event::KeyEvent) -> Option<KeyCode> {
         .then_some(key.code)
 }
 
+/// `s` shortened from the left to `width` chars, so the end of a path (what tells similar
+/// rows apart) stays visible: `…/c/cache/file`.
+pub fn fit_left(s: &str, width: usize) -> String {
+    let n = s.chars().count();
+    if n <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let tail: String = s.chars().skip(n - (width - 1)).collect();
+    format!("…{tail}")
+}
+
+/// Shown while the first scan runs, before there are rows to draw.
+pub fn draw_scanning(f: &mut Frame) {
+    f.render_widget(ratatui::text::Span::raw("Scanning…"), f.area());
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [list_area, status_area, help_area] = Layout::vertical([
         Constraint::Fill(1),
@@ -213,12 +248,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             } else {
                 format!("  ({})", r.status)
             };
-            let text = format!(
-                "{mark} {:>10} {} {:<9} {}{tail}",
+            let head = format!(
+                "{mark} {:>10} {} {:<9} ",
                 human(r.bytes),
                 bar(r.bytes, max),
-                r.category,
-                escape_path(&r.path)
+                r.category
+            );
+            // 2 columns go to the highlight symbol; the path gets what is left after head and reason
+            let room = (list_area.width as usize)
+                .saturating_sub(2 + head.chars().count() + tail.chars().count());
+            let text = format!(
+                "{head}{}{tail}",
+                fit_left(&escape_path(&r.path), room.max(1))
             );
             ListItem::new(text).style(if ok {
                 Style::new()
@@ -240,8 +281,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             human(app.selected_bytes())
         )
     } else {
+        let hidden = if app.hidden > 0 {
+            format!("  ({} hidden: other users')", app.hidden)
+        } else {
+            String::new()
+        };
         format!(
-            "selected: {n} item{}, {}   {}",
+            "selected: {n} item{}, {}{hidden}   {}",
             if n == 1 { "" } else { "s" },
             human(app.selected_bytes()),
             app.message
@@ -264,15 +310,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 /// Runs the interactive explorer until the user quits. Returns whether any delete failed.
 pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Result<bool> {
-    let mut app = App::new(collect(rules, ctx));
     let mut terminal = ratatui::try_init()?;
-    let result = (|| loop {
-        terminal.draw(|f| draw(f, &mut app))?;
-        if let Event::Key(key) = event::read()?
-            && let Some(code) = translate(key)
-            && app.handle_key(code, ctx, rules, manifest_dir) == Action::Quit
-        {
-            return Ok(app.failed);
+    let result = (|| -> io::Result<bool> {
+        terminal.draw(draw_scanning)?;
+        let mut app = App::new(collect(rules, ctx));
+        loop {
+            terminal.draw(|f| draw(f, &mut app))?;
+            if let Event::Key(key) = event::read()?
+                && let Some(code) = translate(key)
+                && app.handle_key(code, ctx, rules, manifest_dir) == Action::Quit
+            {
+                return Ok(app.failed);
+            }
         }
     })();
     ratatui::restore();
@@ -540,5 +589,65 @@ mod tests {
         let mut release = k(KeyCode::Char('q'), KeyModifiers::NONE);
         release.kind = KeyEventKind::Release;
         assert_eq!(translate(release), None);
+    }
+
+    #[test]
+    fn fit_left_keeps_the_end() {
+        assert_eq!(fit_left("/a/b/c", 10), "/a/b/c");
+        let f = fit_left("/home/me/.cache/pip/http/blob", 12);
+        assert_eq!(f.chars().count(), 12);
+        assert!(f.starts_with('…') && f.ends_with("http/blob"));
+        assert_eq!(fit_left("abc", 0), "");
+        assert_eq!(fit_left("abcdef", 1), "…");
+    }
+
+    #[test]
+    fn long_paths_are_cut_on_the_left() {
+        let long = format!("/very/long/{}/unique-tail", "dir/".repeat(30));
+        let mut a = App::new(vec![row(&long, 1, "ok")]);
+        let s = screen(&mut a);
+        assert!(s.contains("unique-tail") && s.contains('…'), "{s}");
+    }
+
+    #[test]
+    fn skipped_reason_stays_visible_when_path_is_cut() {
+        let long = format!("/very/long/{}/unique-tail", "dir/".repeat(30));
+        let mut a = App::new(vec![row(&long, 1, "skipped: in use by a process")]);
+        let s = screen(&mut a);
+        assert!(
+            s.contains("in use by a process") && s.contains("unique-tail"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn scanning_screen_says_so() {
+        let mut t = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        t.draw(draw_scanning).unwrap();
+        let s: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(s.contains("Scanning"), "{s}");
+    }
+
+    #[test]
+    fn other_users_rows_are_hidden_and_counted() {
+        let mut a = App::new(vec![
+            row("mine", 5, "ok"),
+            row("theirs", 9, "skipped: owned by another user"),
+            row("busy", 4, "skipped: in use by a process"),
+        ]);
+        let names: Vec<_> = a
+            .rows
+            .iter()
+            .map(|r| r.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["mine", "busy"]);
+        assert_eq!(a.hidden, 1);
+        assert!(screen(&mut a).contains("1 hidden"));
     }
 }
