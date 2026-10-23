@@ -14,7 +14,14 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
@@ -23,14 +30,14 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         run: |
-          name=safesweep-${TAG}-x86_64-unknown-linux-musl
+          name=safesweep-${TAG}-${{ matrix.target }}
           mkdir "$name"
-          cp target/x86_64-unknown-linux-musl/release/safesweep README.md LICENSE-MIT LICENSE-APACHE "$name"/
+          cp target/${{ matrix.target }}/release/safesweep README.md LICENSE-MIT LICENSE-APACHE "$name"/
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
       - name: Upload to release
