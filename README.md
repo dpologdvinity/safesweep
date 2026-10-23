@@ -6,6 +6,10 @@ Most cleaners guess. safesweep only touches known cache locations, and before de
 
 Linux and WSL only.
 
+![safesweep scan, clean and why](demo/demo.gif)
+
+The demo runs against a throwaway home directory with a faked clock; `demo/make.sh` rebuilds it.
+
 ## Install
 
 ```sh
