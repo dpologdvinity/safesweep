@@ -49,7 +49,10 @@ safesweep clean --apply       # remove it
 safesweep --category pip clean --apply   # limit to one rule (repeatable)
 safesweep why                 # what is using the CPU right now
 safesweep tui                 # browse, select and delete interactively
+safesweep completions bash    # also zsh, fish, elvish, powershell
 ```
+
+The `.deb`, `.rpm` and release tarballs include the man page and bash/zsh/fish completions. After `cargo install`, load completions with e.g. `safesweep completions bash > ~/.local/share/bash-completion/completions/safesweep`.
 
 ## `tui`: browse and delete interactively
 

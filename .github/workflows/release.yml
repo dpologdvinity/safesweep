@@ -40,8 +40,10 @@ jobs:
       - name: Package
         run: |
           name=safesweep-${TAG}-${{ matrix.target }}
+          packaging/gen-extras.sh target/${{ matrix.target }}/release/safesweep
           mkdir "$name"
           cp target/${{ matrix.target }}/release/safesweep README.md LICENSE-MIT LICENSE-APACHE "$name"/
+          cp target/extras/* "$name"/
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
           # static musl binary, so the .deb/.rpm have no library dependencies

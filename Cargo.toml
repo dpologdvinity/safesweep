@@ -8,13 +8,15 @@ description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 # packaging and demo files for other channels; not part of the crate
-exclude = ["/demo", "/npm", "/apt", "/flake.nix", "/pyproject.toml", "/.github", "/RELEASING.md"]
+exclude = ["/demo", "/npm", "/apt", "/flake.nix", "/pyproject.toml", "/.github", "/RELEASING.md", "/packaging"]
 repository = "https://github.com/dpologdvinity/safesweep"
 keywords = ["cache", "cleanup", "disk", "wsl", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 libc = "0.2.191"
 ratatui = "0.30.2"
 rayon = "1.12.0"
@@ -48,6 +50,10 @@ priority = "optional"
 extended-description = "Deletes cache and temp files only when it can prove they are safe: nothing open, nothing recent, nothing shared. Also shows what is using the CPU (safesweep why) and has an interactive explorer (safesweep tui)."
 assets = [
     ["target/release/safesweep", "usr/bin/", "755"],
+    ["target/extras/safesweep.1", "usr/share/man/man1/safesweep.1", "644"],
+    ["target/extras/safesweep.bash", "usr/share/bash-completion/completions/safesweep", "644"],
+    ["target/extras/_safesweep", "usr/share/zsh/vendor-completions/_safesweep", "644"],
+    ["target/extras/safesweep.fish", "usr/share/fish/vendor_completions.d/safesweep.fish", "644"],
     ["README.md", "usr/share/doc/safesweep/README.md", "644"],
     ["LICENSE-MIT", "usr/share/doc/safesweep/LICENSE-MIT", "644"],
     ["LICENSE-APACHE", "usr/share/doc/safesweep/LICENSE-APACHE", "644"],
@@ -56,6 +62,10 @@ assets = [
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/safesweep", dest = "/usr/bin/safesweep", mode = "755" },
+    { source = "target/extras/safesweep.1", dest = "/usr/share/man/man1/safesweep.1", mode = "644" },
+    { source = "target/extras/safesweep.bash", dest = "/usr/share/bash-completion/completions/safesweep", mode = "644" },
+    { source = "target/extras/_safesweep", dest = "/usr/share/zsh/site-functions/_safesweep", mode = "644" },
+    { source = "target/extras/safesweep.fish", dest = "/usr/share/fish/vendor_completions.d/safesweep.fish", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/safesweep/README.md", mode = "644", doc = true },
     { source = "LICENSE-MIT", dest = "/usr/share/licenses/safesweep/LICENSE-MIT", mode = "644", doc = true },
     { source = "LICENSE-APACHE", dest = "/usr/share/licenses/safesweep/LICENSE-APACHE", mode = "644", doc = true },

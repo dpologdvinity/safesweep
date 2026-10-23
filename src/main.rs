@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use safesweep::render::{self, human};
 use safesweep::{Ctx, clean, collect, rules, tui, why, wsl};
 use std::fmt::Write as _;
@@ -36,6 +36,11 @@ enum Cmd {
     },
     /// Browse candidates interactively, select the safe ones and delete them
     Tui,
+    /// Print a shell completion script, e.g. `safesweep completions bash > ~/.local/share/bash-completion/completions/safesweep`
+    Completions { shell: clap_complete::Shell },
+    /// Print the man page (roff)
+    #[command(hide = true)]
+    Man,
     /// Show which processes and programs are using the CPU
     Why {
         /// How long to sample
@@ -62,6 +67,24 @@ fn runtime_error(msg: &str) -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, String> {
     let cmd = cli.cmd.unwrap_or(Cmd::Scan { json: false });
+    match cmd {
+        Cmd::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "safesweep",
+                &mut std::io::stdout(),
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        Cmd::Man => {
+            return match clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout()) {
+                Ok(()) => Ok(ExitCode::SUCCESS),
+                Err(e) => Ok(runtime_error(&format!("cannot write man page: {e}"))),
+            };
+        }
+        _ => {}
+    }
     if let Cmd::Why { interval_ms, top } = cmd {
         if !cli.categories.is_empty() {
             return Err("--category does not apply to why".into());
@@ -87,7 +110,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     }
     let rows = collect(&selected, &ctx);
     match cmd {
-        Cmd::Why { .. } => unreachable!("handled above"),
+        Cmd::Why { .. } | Cmd::Completions { .. } | Cmd::Man => unreachable!("handled above"),
         Cmd::Tui => unreachable!("handled above"),
         Cmd::Scan { json: true } => println!("{}", render::json(&rows)),
         Cmd::Scan { json: false } => print!("{}", render::table(&rows)),
