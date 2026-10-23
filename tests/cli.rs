@@ -328,3 +328,17 @@ fn why_survives_closed_pipe() {
     let out = child.wait_with_output().unwrap();
     assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
 }
+
+#[test]
+fn tui_needs_a_terminal() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .arg("tui")
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8_lossy(&out).contains("error: tui needs an interactive terminal"));
+}

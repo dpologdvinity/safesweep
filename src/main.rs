@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use safesweep::render::{self, human};
-use safesweep::{Ctx, clean, collect, rules, why, wsl};
+use safesweep::{Ctx, clean, collect, rules, tui, why, wsl};
 use std::fmt::Write as _;
+use std::io::IsTerminal;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
@@ -33,6 +34,8 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Browse candidates interactively, select the safe ones and delete them
+    Tui,
     /// Show which processes and programs are using the CPU
     Why {
         /// How long to sample
@@ -57,9 +60,19 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         return why(interval_ms, top);
     }
     let ctx = Ctx::from_env()?;
-    let rows = collect(&rules::select(&cli.categories)?, &ctx);
+    let selected = rules::select(&cli.categories)?;
+    if matches!(cmd, Cmd::Tui) {
+        if !std::io::stdout().is_terminal() {
+            return Err("tui needs an interactive terminal".into());
+        }
+        let dir = ctx.home.join(".local/state/safesweep");
+        tui::run(&selected, &ctx, &dir).map_err(|e| format!("terminal error: {e}"))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let rows = collect(&selected, &ctx);
     match cmd {
         Cmd::Why { .. } => unreachable!("handled above"),
+        Cmd::Tui => unreachable!("handled above"),
         Cmd::Scan { json: true } => println!("{}", render::json(&rows)),
         Cmd::Scan { json: false } => print!("{}", render::table(&rows)),
         Cmd::Clean { apply } => {

@@ -9,6 +9,7 @@ pub mod guard;
 pub mod render;
 pub mod rules;
 pub mod scan;
+pub mod tui;
 pub mod why;
 pub mod wsl;
 
@@ -48,7 +49,7 @@ impl Ctx {
 }
 
 /// One candidate as shown by `scan` and acted on by `clean`.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Row {
     pub category: &'static str,
     #[serde(serialize_with = "lossy")]

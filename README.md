@@ -27,7 +27,22 @@ safesweep clean               # dry run: what would be removed
 safesweep clean --apply       # remove it
 safesweep --category pip clean --apply   # limit to one rule (repeatable)
 safesweep why                 # what is using the CPU right now
+safesweep tui                 # browse, select and delete interactively
 ```
+
+## `tui`: browse and delete interactively
+
+`safesweep tui` shows the same candidates as `scan`, biggest first, with a size bar. Safe rows can be selected; skipped rows are greyed out with the reason and cannot be selected.
+
+| Key | Action |
+|---|---|
+| `j` / `k` or arrows | move |
+| `space` | select or unselect the row |
+| `a` / `n` | select all safe rows / none |
+| `d` or `enter` | delete the selection (asks for `y` to confirm) |
+| `q` or `esc` | quit |
+
+Deleting runs the same guarded path as `clean --apply`: every candidate is re-checked right before removal and logged to the manifest. The list is rescanned afterwards. `--category` works here too.
 
 ## `why`: what is eating the CPU
 
