@@ -79,7 +79,7 @@ fn lossy<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
 pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
     let live = guard::in_use(&ctx.proc_root).ok();
     let mounts = scan::mount_points();
-    let mut rows: Vec<Row> = rules
+    let rows: Vec<Row> = rules
         .par_iter()
         .flat_map_iter(|&rule| {
             let root = rule.root_path(ctx);
@@ -120,14 +120,22 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                 .collect::<Vec<_>>()
         })
         .collect();
-    // Rules overlap (a __pycache__ inside a ~/.cache child): keep only the outermost path.
-    rows.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut kept: Vec<Row> = Vec::with_capacity(rows.len());
-    for row in rows {
-        if !kept.last().is_some_and(|k| row.path.starts_with(&k.path)) {
-            kept.push(row);
+    // Rules overlap (a __pycache__ inside a ~/.cache child, or ~/.cache symlinked into the temp
+    // dir): compare real locations and keep only the outermost path. The parent is resolved,
+    // not the candidate itself, so a candidate symlink is never followed.
+    let real = |p: &Path| match (p.parent().map(std::fs::canonicalize), p.file_name()) {
+        (Some(Ok(parent)), Some(name)) => parent.join(name),
+        _ => p.to_path_buf(),
+    };
+    let mut keyed: Vec<(PathBuf, Row)> = rows.into_iter().map(|r| (real(&r.path), r)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut kept: Vec<(PathBuf, Row)> = Vec::with_capacity(keyed.len());
+    for (key, row) in keyed {
+        if !kept.last().is_some_and(|(k, _)| key.starts_with(k)) {
+            kept.push((key, row));
         }
     }
+    let mut kept: Vec<Row> = kept.into_iter().map(|(_, r)| r).collect();
     kept.sort_by_key(|r| std::cmp::Reverse(r.bytes));
     kept
 }
@@ -210,5 +218,24 @@ mod tests {
         let rows = collect(&all, &ctx(h, tmp.path()));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].category, "xdg-cache");
+    }
+
+    #[test]
+    fn collect_dedupes_through_symlinked_root() {
+        // ~/.cache is a symlink into the temp dir: the same directory is reachable by two rules
+        let (home, tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let real = tmp.path().join("real");
+        fs::create_dir_all(real.join("x")).unwrap();
+        fs::write(real.join("x/f"), vec![1u8; 4096]).unwrap();
+        std::os::unix::fs::symlink(&real, home.path().join(".cache")).unwrap();
+
+        let all: Vec<_> = rules::RULES.iter().filter(|r| !r.opt_in).collect();
+        let rows = collect(&all, &ctx(home.path(), tmp.path()));
+        assert_eq!(
+            rows.len(),
+            1,
+            "{:?}",
+            rows.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
     }
 }
