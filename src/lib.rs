@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+pub mod guard;
 pub mod scan;
 
 /// Everything that depends on the environment, so tests can supply their own.
