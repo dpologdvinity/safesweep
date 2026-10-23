@@ -8,7 +8,7 @@ description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 # packaging and demo files for other channels; not part of the crate
-exclude = ["/demo", "/npm", "/apt", "/flake.nix", "/pyproject.toml", "/.github"]
+exclude = ["/demo", "/npm", "/apt", "/flake.nix", "/pyproject.toml", "/.github", "/RELEASING.md"]
 repository = "https://github.com/dpologdvinity/safesweep"
 keywords = ["cache", "cleanup", "disk", "wsl", "cli"]
 categories = ["command-line-utilities", "filesystem"]

@@ -89,3 +89,35 @@ jobs:
           git add -A && git commit -q -m "apt repository for $TAG"
           # generated content: the branch always holds just the latest release
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+
+  # crates.io: trusted publishing when it is configured on crates.io, otherwise the
+  # CARGO_REGISTRY_TOKEN secret. Skips a version that is already published.
+  crates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Check version
+        id: check
+        run: |
+          ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          [ "v$ver" = "$TAG" ] || { echo "::error::tag $TAG does not match Cargo.toml version $ver"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A "safesweep-release (github.com/dpologdvinity/safesweep)" "https://crates.io/api/v1/crates/safesweep/$ver")
+          if [ "$code" = 200 ]; then echo "safesweep $ver already on crates.io"; echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        if: steps.check.outputs.skip != 'true'
+        id: auth
+        continue-on-error: true # not configured yet: fall back to the token secret
+      - if: steps.check.outputs.skip != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
