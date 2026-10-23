@@ -14,6 +14,7 @@ pub mod why;
 pub mod wsl;
 
 /// Everything that depends on the environment, so tests can supply their own.
+#[derive(Clone)]
 pub struct Ctx {
     pub home: PathBuf,
     pub tmp: PathBuf,

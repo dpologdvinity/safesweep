@@ -27,6 +27,8 @@ pub struct App {
     pub failed: bool,
     /// Rows left out because they belong to other users (never deletable, only clutter).
     pub hidden: usize,
+    /// Set after a delete: `run` rescans in the background so the scan can be cancelled.
+    pub needs_rescan: bool,
 }
 
 impl App {
@@ -42,6 +44,7 @@ impl App {
             message: String::new(),
             failed: false,
             hidden,
+            needs_rescan: false,
         }
     }
 
@@ -74,7 +77,7 @@ impl App {
 
     /// Removes the selected rows through the same guarded path as `safesweep clean --apply`,
     /// then rescans so the list shows what is really left.
-    fn delete(&mut self, ctx: &Ctx, rules: &[&'static Rule], manifest_dir: &Path) {
+    fn delete(&mut self, ctx: &Ctx, manifest_dir: &Path) {
         let chosen: Vec<Row> = self
             .selected
             .iter()
@@ -117,8 +120,15 @@ impl App {
                 )
             }
         };
-        (self.rows, self.hidden) = shown(collect(rules, ctx));
         self.selected.clear();
+        self.needs_rescan = true;
+    }
+
+    /// Replaces the list after a rescan, keeping the cursor near where it was.
+    pub fn set_rows(&mut self, rows: Vec<Row>) {
+        (self.rows, self.hidden) = shown(rows);
+        self.selected.clear();
+        self.needs_rescan = false;
         let keep = self
             .state
             .selected()
@@ -128,18 +138,12 @@ impl App {
     }
 
     /// Applies one key press. Deleting re-runs the full guard check through `clean::clean`
-    /// and then rescans with `rules`.
-    pub fn handle_key(
-        &mut self,
-        code: KeyCode,
-        ctx: &Ctx,
-        rules: &[&'static Rule],
-        manifest_dir: &Path,
-    ) -> Action {
+    /// and then asks `run` for a rescan.
+    pub fn handle_key(&mut self, code: KeyCode, ctx: &Ctx, manifest_dir: &Path) -> Action {
         if self.confirming {
             self.confirming = false;
             if code == KeyCode::Char('y') {
-                self.delete(ctx, rules, manifest_dir);
+                self.delete(ctx, manifest_dir);
             } else {
                 self.message = "cancelled".into();
             }
@@ -221,7 +225,10 @@ pub fn fit_left(s: &str, width: usize) -> String {
 
 /// Shown while the first scan runs, before there are rows to draw.
 pub fn draw_scanning(f: &mut Frame) {
-    f.render_widget(ratatui::text::Span::raw("Scanning…"), f.area());
+    f.render_widget(
+        ratatui::text::Span::raw("Scanning…  (q to cancel)"),
+        f.area(),
+    );
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -308,19 +315,53 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
 }
 
+/// Collects rows on a background thread while showing the scanning screen. Returns `None` if
+/// the user cancels: raw mode swallows Ctrl-C, and a pycache or artifacts scan can take minutes.
+fn scan(
+    terminal: &mut ratatui::DefaultTerminal,
+    rules: &[&'static Rule],
+    ctx: &Ctx,
+) -> io::Result<Option<Vec<Row>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (rules, ctx) = (rules.to_vec(), ctx.clone());
+    std::thread::spawn(move || {
+        let _ = tx.send(collect(&rules, &ctx));
+    });
+    loop {
+        terminal.draw(draw_scanning)?;
+        if let Ok(rows) = rx.try_recv() {
+            return Ok(Some(rows));
+        }
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && matches!(translate(key), Some(KeyCode::Char('q') | KeyCode::Esc))
+        {
+            return Ok(None);
+        }
+    }
+}
+
 /// Runs the interactive explorer until the user quits. Returns whether any delete failed.
 pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Result<bool> {
     let mut terminal = ratatui::try_init()?;
     let result = (|| -> io::Result<bool> {
-        terminal.draw(draw_scanning)?;
-        let mut app = App::new(collect(rules, ctx));
+        let Some(rows) = scan(&mut terminal, rules, ctx)? else {
+            return Ok(false);
+        };
+        let mut app = App::new(rows);
         loop {
             terminal.draw(|f| draw(f, &mut app))?;
             if let Event::Key(key) = event::read()?
                 && let Some(code) = translate(key)
-                && app.handle_key(code, ctx, rules, manifest_dir) == Action::Quit
+                && app.handle_key(code, ctx, manifest_dir) == Action::Quit
             {
                 return Ok(app.failed);
+            }
+            if app.needs_rescan {
+                match scan(&mut terminal, rules, ctx)? {
+                    Some(rows) => app.set_rows(rows),
+                    None => return Ok(app.failed),
+                }
             }
         }
     })();
@@ -363,7 +404,7 @@ mod tests {
 
     fn keys(app: &mut App, ks: &[KeyCode], ctx: &Ctx, dir: &Path) {
         for &k in ks {
-            app.handle_key(k, ctx, &[], dir);
+            app.handle_key(k, ctx, dir);
         }
     }
 
@@ -397,7 +438,7 @@ mod tests {
         );
         assert_eq!(a.selected, BTreeSet::from([0]));
         assert!(a.message.contains("in use by a process"), "{}", a.message);
-        a.handle_key(KeyCode::Char(' '), &c, &[], d); // unselect the skipped row: still nothing
+        a.handle_key(KeyCode::Char(' '), &c, d); // unselect the skipped row: still nothing
         keys(&mut a, &[KeyCode::Up, KeyCode::Char(' ')], &c, d);
         assert!(a.selected.is_empty());
     }
@@ -448,15 +489,9 @@ mod tests {
     #[test]
     fn quit_keys() {
         let (c, d) = (ctx(Path::new("/nonexistent")), Path::new("/nonexistent"));
-        assert_eq!(
-            app().handle_key(KeyCode::Char('q'), &c, &[], d),
-            Action::Quit
-        );
-        assert_eq!(app().handle_key(KeyCode::Esc, &c, &[], d), Action::Quit);
-        assert_eq!(
-            app().handle_key(KeyCode::Down, &c, &[], d),
-            Action::Continue
-        );
+        assert_eq!(app().handle_key(KeyCode::Char('q'), &c, d), Action::Quit);
+        assert_eq!(app().handle_key(KeyCode::Esc, &c, d), Action::Quit);
+        assert_eq!(app().handle_key(KeyCode::Down, &c, d), Action::Continue);
     }
 
     /// `ctx.tmp/t/f` is one old, unused candidate for the real `tmp` rule.
@@ -477,17 +512,21 @@ mod tests {
         assert_eq!(a.rows.len(), 1);
         assert_eq!(a.rows[0].status, "ok");
         for k in [KeyCode::Char(' '), KeyCode::Char('d')] {
-            a.handle_key(k, &c, &rules, &dir);
+            a.handle_key(k, &c, &dir);
         }
         assert!(a.confirming);
         assert!(
             c.tmp.join("t").exists(),
             "nothing deleted before confirming"
         );
-        a.handle_key(KeyCode::Char('y'), &c, &rules, &dir);
+        a.handle_key(KeyCode::Char('y'), &c, &dir);
         assert!(!c.tmp.join("t").exists());
         assert!(a.message.contains("freed"), "{}", a.message);
-        assert!(!a.confirming && a.selected.is_empty() && a.rows.is_empty());
+        assert!(!a.confirming && a.selected.is_empty());
+        // the rescan runs in `run` (interruptible); the app only asks for it
+        assert!(a.needs_rescan);
+        a.set_rows(collect(&rules, &c));
+        assert!(!a.needs_rescan && a.rows.is_empty() && a.state.selected().is_none());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "manifest written");
     }
 
@@ -497,7 +536,7 @@ mod tests {
         let dir = t.path().join("state");
         let mut a = App::new(collect(&rules, &c));
         for k in [KeyCode::Char(' '), KeyCode::Char('d'), KeyCode::Char('x')] {
-            a.handle_key(k, &c, &rules, &dir);
+            a.handle_key(k, &c, &dir);
         }
         assert!(!a.confirming);
         assert!(c.tmp.join("t").exists());
@@ -508,7 +547,7 @@ mod tests {
     fn delete_with_nothing_selected_does_not_prompt() {
         let (t, c, rules, _) = fixture();
         let mut a = App::new(collect(&rules, &c));
-        a.handle_key(KeyCode::Char('d'), &c, &rules, &t.path().join("state"));
+        a.handle_key(KeyCode::Char('d'), &c, &t.path().join("state"));
         assert!(!a.confirming);
         assert_eq!(a.message, "nothing selected");
     }
@@ -540,10 +579,10 @@ mod tests {
         let (t, c, rules, _) = fixture();
         let dir = t.path().join("state");
         let mut a = App::new(collect(&rules, &c));
-        a.handle_key(KeyCode::Char(' '), &c, &rules, &dir);
+        a.handle_key(KeyCode::Char(' '), &c, &dir);
         let _held = fs::File::open(c.tmp.join("t/f")).unwrap(); // becomes busy after the scan
         for k in [KeyCode::Char('d'), KeyCode::Char('y')] {
-            a.handle_key(k, &c, &rules, &dir);
+            a.handle_key(k, &c, &dir);
         }
         assert!(c.tmp.join("t").exists());
         assert!(a.message.contains("1 skipped"), "{}", a.message);
@@ -558,7 +597,7 @@ mod tests {
         fs::write(&dir, "not a dir").unwrap();
         let mut a = App::new(collect(&rules, &c));
         for k in [KeyCode::Char(' '), KeyCode::Char('d'), KeyCode::Char('y')] {
-            a.handle_key(k, &c, &rules, &dir);
+            a.handle_key(k, &c, &dir);
         }
         assert!(c.tmp.join("t").exists());
         assert!(a.message.contains("nothing deleted"), "{}", a.message);
