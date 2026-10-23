@@ -32,11 +32,14 @@ A candidate is skipped, with the reason shown, if any of these hold:
 
 - it is a symlink, or resolves outside its rule's directory
 - anything inside is owned by another user (unless run as root)
-- anything inside was modified within the rule's age threshold
+- anything inside changed within the rule's age threshold (newer of mtime and ctime, so a tree unpacked with `tar` or `cp -p` today counts as new)
 - it contains a socket or FIFO (live tmux or X11 sockets don't show up as open files)
 - anything inside is open, memory-mapped, executing, or the working directory of any process
-- any part of it can't be read, or it contains a mount point
+- any part of it can't be read, it contains a read-only directory (deletion would stop halfway), or it is or contains a mount point
 - `/proc` can't be read, so open files can't be checked
+- it is in the temp dir and safesweep runs as root (services with a private `/tmp` and containers can't be checked from outside)
+
+`TMPDIR` must be an absolute path that is not `/` and does not contain your home directory; otherwise safesweep refuses to run.
 
 These checks run when scanning and again right before each deletion.
 
