@@ -13,6 +13,8 @@ pub enum Matcher {
     Children { exclude: &'static [&'static str] },
     /// Every directory with this name, without descending into matches.
     NamedDirs(&'static str),
+    /// Build directories (`node_modules`, `target`, `.venv`) of git projects idle for 30+ days.
+    IdleArtifacts,
 }
 
 pub struct Entry {
@@ -42,6 +44,7 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
             .filter(|e| !exclude.iter().any(|x| e.file_name() == *x))
             .map(|e| e.path())
             .collect(),
+        Matcher::IdleArtifacts => idle_artifacts(root),
         Matcher::NamedDirs(name) => {
             let mut out = Vec::new();
             let mut walk = WalkDir::new(root)
@@ -59,6 +62,69 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
             out
         }
     }
+}
+
+/// Directory name -> files that must sit next to it for it to count as that tool's artifact.
+const ARTIFACTS: [(&str, &[&str]); 3] = [
+    ("node_modules", &["package.json"]),
+    ("target", &["Cargo.toml"]),
+    (".venv", &["pyproject.toml", "requirements.txt", "setup.py"]),
+];
+const IDLE_DAYS: u64 = 30;
+const MAX_DEPTH: usize = 6;
+
+// shortcut: idleness uses the real clock, not Ctx.now; thread Ctx through find if tests need to fake it.
+fn idle_artifacts(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut walk = WalkDir::new(root)
+        .follow_links(false)
+        .same_file_system(true)
+        .min_depth(1)
+        .max_depth(MAX_DEPTH)
+        .into_iter();
+    while let Some(Ok(entry)) = walk.next() {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if name.starts_with('.') && name != ".venv"
+            || name == "node_modules" && !is_artifact(&entry)
+        {
+            walk.skip_current_dir();
+        } else if is_artifact(&entry) {
+            walk.skip_current_dir();
+            if project_idle(entry.path().parent().unwrap_or(root)) {
+                out.push(entry.into_path());
+            }
+        }
+    }
+    out
+}
+
+fn is_artifact(entry: &walkdir::DirEntry) -> bool {
+    let Some(project) = entry.path().parent() else {
+        return false;
+    };
+    let name = entry.file_name().to_string_lossy();
+    ARTIFACTS
+        .iter()
+        .any(|(dir, markers)| *dir == name && markers.iter().any(|m| project.join(m).is_file()))
+}
+
+/// True if the project's last git activity is older than `IDLE_DAYS`. No `.git` means unknown, so not idle.
+fn project_idle(project: &Path) -> bool {
+    let activity = [".git/logs/HEAD", ".git/index"]
+        .iter()
+        .filter_map(|f| {
+            fs::metadata(project.join(f))
+                .and_then(|m| m.modified())
+                .ok()
+        })
+        .max();
+    activity.is_some_and(|t| {
+        SystemTime::now().duration_since(t).unwrap_or_default()
+            > Duration::from_secs(IDLE_DAYS * 86400)
+    })
 }
 
 /// Size, age, ownership and special files of the tree at `path`.
@@ -274,5 +340,60 @@ mod tests {
         let e = measure(&t.path().join("link")).unwrap();
         assert!(e.is_symlink);
         assert_eq!(e.bytes, 0);
+    }
+
+    /// Project dir with a marker file and artifact dir; git activity backdated `days`.
+    fn project(
+        root: &Path,
+        name: &str,
+        marker: &str,
+        artifact: &str,
+        git_days: Option<u32>,
+    ) -> PathBuf {
+        let p = root.join(name);
+        fs::create_dir_all(p.join(artifact)).unwrap();
+        fs::write(p.join(marker), "x").unwrap();
+        if let Some(days) = git_days {
+            fs::create_dir_all(p.join(".git/logs")).unwrap();
+            let old =
+                FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400) * days);
+            for f in [".git/logs/HEAD", ".git/index"] {
+                fs::write(p.join(f), "x").unwrap();
+                set_file_mtime(p.join(f), old).unwrap();
+            }
+        }
+        p.join(artifact)
+    }
+
+    #[test]
+    fn idle_artifacts_lists_only_idle_git_projects() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        let want = BTreeSet::from([
+            project(r, "web", "package.json", "node_modules", Some(60)),
+            project(r, "rs", "Cargo.toml", "target", Some(60)),
+            project(r, "py", "pyproject.toml", ".venv", Some(60)),
+            project(
+                &r.join("a/b"),
+                "deep",
+                "package.json",
+                "node_modules",
+                Some(60),
+            ),
+        ]);
+        project(r, "active", "package.json", "node_modules", Some(2));
+        project(r, "nogit", "Cargo.toml", "target", None);
+        project(r, "wrong-marker", "package.json", "target", Some(60));
+        project(r, "dot/.hidden", "package.json", "node_modules", Some(60));
+        let got: BTreeSet<PathBuf> = find(r, &Matcher::IdleArtifacts).into_iter().collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn idle_artifacts_does_not_descend_into_matches() {
+        let t = tempfile::tempdir().unwrap();
+        let nm = project(t.path(), "web", "package.json", "node_modules", Some(60));
+        project(&nm, "inner", "package.json", "node_modules", Some(60));
+        assert_eq!(find(t.path(), &Matcher::IdleArtifacts), vec![nm]);
     }
 }

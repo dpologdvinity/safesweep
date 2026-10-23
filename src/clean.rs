@@ -139,9 +139,9 @@ mod tests {
             category: "tmp",
             path,
             bytes: 4096,
-            regen: RULES[6].regen,
+            regen: RULES.iter().find(|r| r.id == "tmp").unwrap().regen,
             status: status.into(),
-            rule: &RULES[6],
+            rule: RULES.iter().find(|r| r.id == "tmp").unwrap(),
         }
     }
 

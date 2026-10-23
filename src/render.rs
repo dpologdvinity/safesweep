@@ -72,7 +72,7 @@ mod tests {
             bytes,
             regen: Regen::Free,
             status: status.into(),
-            rule: &RULES[6],
+            rule: RULES.iter().find(|r| r.id == "tmp").unwrap(),
         }
     }
 
