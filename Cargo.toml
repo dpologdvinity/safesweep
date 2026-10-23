@@ -2,6 +2,8 @@
 name = "safesweep"
 version = "0.4.2"
 edition = "2024"
+# let-chains in `if let ... && let ...` need 1.88
+rust-version = "1.88"
 description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
