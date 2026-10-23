@@ -1,12 +1,14 @@
 [package]
 name = "safesweep"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 # let-chains in `if let ... && let ...` need 1.88
 rust-version = "1.88"
 description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+# packaging and demo files for other channels; not part of the crate
+exclude = ["/demo", "/npm", "/flake.nix", "/pyproject.toml", "/.github"]
 repository = "https://github.com/dpologdvinity/safesweep"
 keywords = ["cache", "cleanup", "disk", "wsl", "cli"]
 categories = ["command-line-utilities", "filesystem"]
@@ -24,3 +26,37 @@ walkdir = "2.5.0"
 assert_cmd = "2.2.2"
 filetime = "0.2.29"
 tempfile = "3.27.0"
+
+# `cargo binstall safesweep` downloads the release tarball instead of compiling.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-x86_64-unknown-linux-musl.tar.gz"
+bin-dir = "{ name }-v{ version }-x86_64-unknown-linux-musl/{ bin }"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-aarch64-unknown-linux-musl.tar.gz"
+bin-dir = "{ name }-v{ version }-aarch64-unknown-linux-musl/{ bin }"
+
+[package.metadata.deb]
+maintainer = "Kaitlyn Bassford <kaitlynbassford@gmail.com>"
+section = "utils"
+priority = "optional"
+extended-description = "Deletes cache and temp files only when it can prove they are safe: nothing open, nothing recent, nothing shared. Also shows what is using the CPU (safesweep why) and has an interactive explorer (safesweep tui)."
+assets = [
+    ["target/release/safesweep", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/safesweep/README.md", "644"],
+    ["LICENSE-MIT", "usr/share/doc/safesweep/LICENSE-MIT", "644"],
+    ["LICENSE-APACHE", "usr/share/doc/safesweep/LICENSE-APACHE", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/safesweep", dest = "/usr/bin/safesweep", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/safesweep/README.md", mode = "644", doc = true },
+    { source = "LICENSE-MIT", dest = "/usr/share/licenses/safesweep/LICENSE-MIT", mode = "644", doc = true },
+    { source = "LICENSE-APACHE", dest = "/usr/share/licenses/safesweep/LICENSE-APACHE", mode = "644", doc = true },
+]
