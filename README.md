@@ -1,6 +1,6 @@
 # safesweep
 
-Clean caches and temp files that are provably safe to delete. Nothing open, nothing recent, nothing shared.
+Clean caches and temp files that are provably safe to delete, and see what is eating your CPU.
 
 Most cleaners guess. safesweep only touches known cache locations, and before deleting anything it proves no running process is using it. On WSL, it also tells you how to give the freed space back to Windows.
 
@@ -20,7 +20,14 @@ safesweep scan --json         # same, as JSON
 safesweep clean               # dry run: what would be removed
 safesweep clean --apply       # remove it
 safesweep --category pip clean --apply   # limit to one rule (repeatable)
+safesweep why                 # what is using the CPU right now
 ```
+
+## `why`: what is eating the CPU
+
+`safesweep why` samples `/proc` for one second (`--interval-ms` to change) and prints how busy the machine is, CPU per program (summed across its processes, so twelve `rustc` jobs show as one line), and the busiest processes with their command lines. Percentages are per core, like `top`.
+
+On WSL, only Linux processes are visible. If Task Manager shows `vmmem` busy but `why` is quiet, the load is on the Windows side.
 
 Every removal is logged to `~/.local/state/safesweep/<unix-time>.log`. If that log cannot be written, nothing is deleted.
 

@@ -9,6 +9,7 @@ pub mod guard;
 pub mod render;
 pub mod rules;
 pub mod scan;
+pub mod why;
 pub mod wsl;
 
 /// Everything that depends on the environment, so tests can supply their own.
