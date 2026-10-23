@@ -63,8 +63,11 @@ Reported sizes count only files with a single hard link. uv hardlinks its cache 
 | `cargo` | `~/.cargo/registry/cache` | 1 day | network |
 | `tmp` | each entry in `$TMPDIR` (or `/tmp`) | 7 days | free |
 | `pycache` | every `__pycache__` under `~` (opt-in: `--category pycache`) | none | free |
+| `artifacts` | `node_modules`, `target`, `.venv` in idle git projects (opt-in: `--category artifacts`) | 30 days | slow |
 
-`pycache` walks your whole home directory, which can take minutes, so it only runs when named.
+`pycache` and `artifacts` walk your home directory (skipping dot-directories), so they only run when named.
+
+`artifacts` only lists a build directory when its project has a marker file next to it (`package.json` for `node_modules`, `Cargo.toml` for `target`, `pyproject.toml`, `requirements.txt` or `setup.py` for `.venv`) and its git history is idle: nothing touched `.git/logs/HEAD` or `.git/index` for 30 days. Projects without `.git` are never listed. Every normal safety check still applies, so a build directory used in the last 30 days is skipped even if nothing was committed.
 
 ## WSL
 

@@ -270,3 +270,30 @@ fn why_reports_cpu() {
     assert!(out.starts_with("CPU busy: "), "{out}");
     assert!(out.contains("PROGRAM"), "{out}");
 }
+
+#[test]
+fn artifacts_lists_idle_projects_but_guard_still_applies() {
+    let fx = Fx::new();
+    let h = fx.home.path();
+    let old = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400 * 60));
+    for (name, git_age) in [("idle", Some(old)), ("active", None)] {
+        put(h.join(format!("code/{name}/node_modules/x/f")));
+        put(h.join(format!("code/{name}/package.json")));
+        fs::create_dir_all(h.join(format!("code/{name}/.git/logs"))).unwrap();
+        for f in ["logs/HEAD", "index"] {
+            let p = h.join(format!("code/{name}/.git/{f}"));
+            fs::write(&p, "x").unwrap();
+            if let Some(t) = git_age {
+                set_file_mtime(&p, t).unwrap();
+            }
+        }
+    }
+    // opt-in: absent from the default scan
+    assert!(!fx.statuses(&[]).keys().any(|k| k.contains("node_modules")));
+    // listed for the idle project only, and still skipped: its tree changed just now
+    let want = BTreeMap::from([(
+        "code/idle/node_modules".into(),
+        "skipped: modified within 30 days".into(),
+    )]);
+    assert_eq!(fx.statuses(&["--category", "artifacts"]), want);
+}

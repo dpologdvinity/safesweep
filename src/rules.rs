@@ -90,6 +90,15 @@ pub static RULES: &[Rule] = &[
         regen: Regen::Free,
         opt_in: true,
     },
+    // Opt-in: walks $HOME and deletes things that take minutes to rebuild.
+    Rule {
+        id: "artifacts",
+        root: Root::Home(""),
+        matcher: Matcher::IdleArtifacts,
+        min_age_days: 30,
+        regen: Regen::Slow,
+        opt_in: true,
+    },
     Rule {
         id: "tmp",
         root: Root::Tmp,
@@ -140,7 +149,7 @@ mod tests {
         assert_eq!(
             select(&["nope".into()]).err(),
             Some(
-                "unknown category 'nope'; valid: xdg-cache, pip, uv, npm, cargo, pycache, tmp"
+                "unknown category 'nope'; valid: xdg-cache, pip, uv, npm, cargo, pycache, artifacts, tmp"
                     .into()
             )
         );
