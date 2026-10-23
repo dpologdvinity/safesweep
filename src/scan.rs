@@ -240,35 +240,41 @@ fn changed(md: &fs::Metadata) -> io::Result<SystemTime> {
 }
 
 /// Every mount point on the system, from `/proc/self/mountinfo`.
+/// Mount points from mountinfo bytes. Read as bytes: one mount point that is not valid UTF-8
+/// must not make every candidate unverifiable.
+fn parse_mountinfo(info: &[u8]) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    info.split(|&b| b == b'\n')
+        .filter_map(|l| l.split(|&b| b == b' ').nth(4))
+        .map(|m| PathBuf::from(std::ffi::OsString::from_vec(unescape(m))))
+        .collect()
+}
+
 pub fn mount_points() -> io::Result<Vec<PathBuf>> {
-    Ok(fs::read_to_string("/proc/self/mountinfo")?
-        .lines()
-        .filter_map(|l| l.split(' ').nth(4))
-        .map(|m| PathBuf::from(unescape(m)))
-        .collect())
+    Ok(parse_mountinfo(&fs::read("/proc/self/mountinfo")?))
 }
 
 /// Undo mountinfo's octal escapes (`\040` is a space).
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find('\\') {
-        out.push_str(&rest[..i]);
-        let code = rest
+fn unescape(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        let octal = s
             .get(i + 1..i + 4)
+            .and_then(|o| std::str::from_utf8(o).ok())
             .and_then(|o| u8::from_str_radix(o, 8).ok());
-        match code {
-            Some(b) => {
-                out.push(b as char);
-                rest = &rest[i + 4..];
+        match (s[i], octal) {
+            (b'\\', Some(b)) => {
+                out.push(b);
+                i += 4;
             }
-            None => {
-                out.push('\\');
-                rest = &rest[i + 1..];
+            (b, _) => {
+                out.push(b);
+                i += 1;
             }
         }
     }
-    out + rest
+    out
 }
 
 #[cfg(test)]
@@ -519,5 +525,15 @@ mod tests {
             find(t.path(), &Matcher::NamedDirs("__pycache__")),
             vec![shown]
         );
+    }
+
+    #[test]
+    fn parse_mountinfo_handles_escapes_and_bad_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let info =
+            b"36 35 98:0 / /mnt/a\\040b rw - ext3 /dev/x rw\n37 35 98:0 / /mnt/\xff rw - x y z\n";
+        let got = parse_mountinfo(info);
+        assert_eq!(got[0], PathBuf::from("/mnt/a b"));
+        assert_eq!(got[1].as_os_str().as_bytes(), b"/mnt/\xff");
     }
 }
