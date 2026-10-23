@@ -1,6 +1,6 @@
 [package]
 name = "safesweep"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
