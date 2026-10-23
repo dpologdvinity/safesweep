@@ -131,20 +131,12 @@ fn why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
     );
     let _ = writeln!(out, "\nPROGRAM               CPU%  PROCS");
     for (comm, pct, n) in why::by_program(&r.procs).iter().take(top) {
-        let _ = writeln!(out, "{comm:<20} {pct:>6.1}  {n:>5}");
+        let _ = writeln!(out, "{:<20} {pct:>6.1}  {n:>5}", render::escape_text(comm));
     }
     let _ = writeln!(out, "\n    PID   CPU%  COMMAND");
     for u in r.procs.iter().take(top) {
-        let cmdline = fs::read(proc_root.join(u.pid.to_string()).join("cmdline"))
-            .map(|b| {
-                String::from_utf8_lossy(&b)
-                    .replace('\0', " ")
-                    .trim()
-                    .to_string()
-            })
-            .ok()
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| format!("[{}]", u.comm));
+        let raw = fs::read(proc_root.join(u.pid.to_string()).join("cmdline")).unwrap_or_default();
+        let cmdline = why::command_line(&raw, &u.comm);
         let cmdline: String = cmdline.chars().take(100).collect();
         let _ = writeln!(out, "{:>7} {:>6.1}  {cmdline}", u.pid, u.pct);
     }

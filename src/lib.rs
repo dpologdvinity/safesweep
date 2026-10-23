@@ -101,7 +101,10 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                         Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
                     };
                     let (bytes, status) = match measured {
-                        Err(e) => (0, format!("skipped: {e}")),
+                        Err(e) => (
+                            0,
+                            format!("skipped: {}", render::escape_text(&e.to_string())),
+                        ),
                         Ok(e) => {
                             let verdict = guard::check(
                                 &path,
@@ -114,7 +117,10 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                             );
                             (
                                 e.bytes,
-                                verdict.map_or_else(|r| format!("skipped: {r}"), |()| "ok".into()),
+                                verdict.map_or_else(
+                                    |r| format!("skipped: {}", render::escape_text(&r)),
+                                    |()| "ok".into(),
+                                ),
                             )
                         }
                     };
@@ -259,5 +265,24 @@ mod tests {
         assert_eq!(check_root_home(me, t.path()), Ok(()));
         let err = check_root_home(0, t.path()).unwrap_err();
         assert!(err.contains("HOME") && err.contains("root"), "{err}");
+    }
+
+    #[test]
+    fn skip_reasons_from_io_errors_are_escaped() {
+        // another user can name an unreadable subdir so the error text fakes a table row
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let (home, tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let bad = tmp.path().join("c/x\nok 9.9 GiB fake");
+        fs::create_dir_all(&bad).unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o300)).unwrap();
+        let tmp_rule: Vec<_> = rules::RULES.iter().filter(|r| r.id == "tmp").collect();
+        let rows = collect(&tmp_rule, &ctx(home.path(), tmp.path()));
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].status.starts_with("skipped"), "{}", rows[0].status);
+        assert!(!rows[0].status.contains('\n'), "{:?}", rows[0].status);
     }
 }

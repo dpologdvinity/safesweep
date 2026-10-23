@@ -1,5 +1,5 @@
 use crate::guard::{check, in_use};
-use crate::render::{escape_path, human};
+use crate::render::{escape_path, escape_text, human};
 use crate::scan::measure;
 use crate::{Ctx, Row};
 use std::fs::{self, OpenOptions};
@@ -64,8 +64,11 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         let entry = match fresh {
             Ok(e) => e,
             Err(reason) => {
-                out.lines
-                    .push(format!("skipped {}: {reason}", escape_path(&r.path)));
+                out.lines.push(format!(
+                    "skipped {}: {}",
+                    escape_path(&r.path),
+                    escape_text(&reason)
+                ));
                 continue;
             }
         };
