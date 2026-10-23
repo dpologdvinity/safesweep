@@ -1,0 +1,25 @@
+# Lets `pipx install safesweep` / `uv tool install safesweep` install the Rust binary from PyPI.
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "safesweep"
+description = "Clean caches and temp files that are provably safe to delete (Linux and WSL)"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+requires-python = ">=3.8"
+dynamic = ["version"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+    "Topic :: System :: Filesystems",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/dpologdvinity/safesweep"
+
+[tool.maturin]
+bindings = "bin"

@@ -12,11 +12,23 @@ The demo runs against a throwaway home directory with a faked clock; `demo/make.
 
 ## Install
 
+Any one of these:
+
 ```sh
-cargo install safesweep
+cargo install safesweep                     # build from source
+cargo binstall safesweep                    # prebuilt binary via cargo-binstall
+brew install dpologdvinity/tap/safesweep    # Homebrew on Linux
+pipx install safesweep                      # or: uv tool install safesweep
+npm install -g safesweep                    # or: pnpm add -g / yarn global add / bun add -g
+nix run github:dpologdvinity/safesweep      # Nix flake
 ```
 
-Or download a prebuilt static Linux binary (x86_64 or aarch64) from the [releases page](https://github.com/dpologdvinity/safesweep/releases) (each tarball has a `.sha256` file next to it).
+Debian/Ubuntu and Fedora packages, and static Linux binaries for x86_64 and aarch64 (each with a `.sha256`), are on the [releases page](https://github.com/dpologdvinity/safesweep/releases):
+
+```sh
+sudo apt install ./safesweep_*_amd64.deb
+sudo dnf install ./safesweep-*.x86_64.rpm
+```
 
 ## Usage
 
