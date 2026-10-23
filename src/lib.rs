@@ -4,6 +4,7 @@ use serde::{Serialize, Serializer};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub mod clean;
 pub mod guard;
 pub mod render;
 pub mod rules;
