@@ -1,5 +1,11 @@
 # safesweep
 
+[![CI](https://github.com/dpologdvinity/safesweep/actions/workflows/ci.yml/badge.svg)](https://github.com/dpologdvinity/safesweep/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/safesweep)](https://crates.io/crates/safesweep)
+[![PyPI](https://img.shields.io/pypi/v/safesweep)](https://pypi.org/project/safesweep/)
+[![npm](https://img.shields.io/npm/v/safesweep)](https://www.npmjs.com/package/safesweep)
+[![license](https://img.shields.io/crates/l/safesweep)](#license)
+
 Clean caches and temp files that are provably safe to delete, and see what is eating your CPU.
 
 Most cleaners guess. safesweep only touches known cache locations, and before deleting anything it proves no running process is using it. On WSL, it also tells you how to give the freed space back to Windows.
