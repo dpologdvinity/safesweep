@@ -20,20 +20,22 @@ jobs:
     strategy:
       matrix:
         target: [x86_64, aarch64]
+        # manylinux for glibc distros (Ubuntu, Debian, Fedora); musllinux for Alpine.
+        # pip and uv only pick musllinux wheels on musl, so both are needed.
+        libc: [manylinux2014, musllinux_1_2]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.TAG }}
-      # musllinux wheels hold the same static binary as the release tarballs
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           target: ${{ matrix.target }}
-          manylinux: musllinux_1_2
+          manylinux: ${{ matrix.libc }}
           args: --release --locked --out dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wheel-${{ matrix.target }}
+          name: wheel-${{ matrix.target }}-${{ matrix.libc }}
           path: dist
 
   sdist:
