@@ -95,6 +95,7 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
                         Ok(e) => {
                             let verdict = guard::check(
                                 &path,
+                                rule.busy_scope(&path),
                                 &e,
                                 &root,
                                 rule.min_age_days,

@@ -1,7 +1,7 @@
 use crate::Ctx;
 use crate::scan::Matcher;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What it costs to get the deleted data back.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
@@ -30,6 +30,14 @@ pub struct Rule {
 }
 
 impl Rule {
+    /// What must be unused by any process before `path` may go.
+    pub fn busy_scope<'a>(&self, path: &'a Path) -> &'a Path {
+        match self.matcher {
+            Matcher::IdleArtifacts => path.parent().unwrap_or(path),
+            _ => path,
+        }
+    }
+
     pub fn root_path(&self, ctx: &Ctx) -> PathBuf {
         match self.root {
             Root::Home(rel) => ctx.home.join(rel),

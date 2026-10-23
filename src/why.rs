@@ -11,8 +11,8 @@ pub struct Sample {
     pub idle: u64,
     /// Number of `cpuN` lines.
     pub ncpu: usize,
-    /// pid -> (comm, utime + stime).
-    pub procs: HashMap<u32, (String, u64)>,
+    /// pid -> (comm, utime + stime, starttime). Start time tells a reused pid from the same process.
+    pub procs: HashMap<u32, (String, u64, u64)>,
 }
 
 pub struct Usage {
@@ -46,16 +46,17 @@ pub fn parse_total(proc_stat: &str) -> Option<(u64, u64, usize)> {
                 .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
         })
         .count();
-    Some((f.iter().sum(), idle, ncpu))
+    // guest and guest_nice (fields 9, 10) are already counted in user and nice
+    Some((f.iter().take(8).sum(), idle, ncpu))
 }
 
-/// `(comm, utime + stime)` from `/proc/<pid>/stat`. The comm may contain spaces and parens.
-pub fn parse_proc(stat: &str) -> Option<(String, u64)> {
+/// `(comm, utime + stime, starttime)` from `/proc/<pid>/stat`. The comm may contain spaces and parens.
+pub fn parse_proc(stat: &str) -> Option<(String, u64, u64)> {
     let (open, close) = (stat.find('(')?, stat.rfind(')')?);
     let comm = stat.get(open + 1..close)?.to_string();
     let f: Vec<&str> = stat[close + 1..].split_whitespace().collect();
     let ticks = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
-    Some((comm, ticks))
+    Some((comm, ticks, f.get(19)?.parse().ok()?))
 }
 
 pub fn sample(proc_root: &Path) -> io::Result<Sample> {
@@ -85,14 +86,24 @@ pub fn sample(proc_root: &Path) -> io::Result<Sample> {
 
 /// CPU use between two samples. Processes that started or exited in between are left out.
 pub fn diff(a: &Sample, b: &Sample) -> Report {
-    let elapsed = b.total.saturating_sub(a.total).max(1) as f64;
+    let elapsed = b.total.saturating_sub(a.total) as f64;
+    if elapsed == 0.0 {
+        return Report {
+            busy_pct: 0.0,
+            ncpu: b.ncpu,
+            procs: Vec::new(),
+        };
+    }
     let idle = b.idle.saturating_sub(a.idle) as f64;
     let per_core = elapsed / b.ncpu.max(1) as f64;
     let mut procs: Vec<Usage> = b
         .procs
         .iter()
-        .filter_map(|(&pid, (comm, ticks))| {
-            let (_, before) = a.procs.get(&pid)?;
+        .filter_map(|(&pid, (comm, ticks, start))| {
+            let (_, before, started) = a.procs.get(&pid)?;
+            if started != start {
+                return None;
+            }
             let used = ticks.saturating_sub(*before);
             (used > 0).then(|| Usage {
                 pid,
@@ -103,7 +114,7 @@ pub fn diff(a: &Sample, b: &Sample) -> Report {
         .collect();
     procs.sort_by(|x, y| y.pct.total_cmp(&x.pct));
     Report {
-        busy_pct: (elapsed - idle) / elapsed * 100.0,
+        busy_pct: ((elapsed - idle) / elapsed * 100.0).clamp(0.0, 100.0),
         ncpu: b.ncpu,
         procs,
     }
@@ -129,7 +140,7 @@ pub fn by_program(procs: &[Usage]) -> Vec<(String, f64, usize)> {
 mod tests {
     use super::*;
 
-    const STAT: &str = "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\ncpu1 50 0 25 400 25 0 0 0 0 0\nintr 1\n";
+    const STAT: &str = "cpu  100 0 50 800 50 0 0 0 7000 7000\ncpu0 50 0 25 400 25 0 0 0 0 0\ncpu1 50 0 25 400 25 0 0 0 0 0\nintr 1\n";
 
     fn s(total: u64, idle: u64, procs: &[(u32, &str, u64)]) -> Sample {
         Sample {
@@ -138,7 +149,7 @@ mod tests {
             ncpu: 2,
             procs: procs
                 .iter()
-                .map(|&(p, c, t)| (p, (c.to_string(), t)))
+                .map(|&(p, c, t)| (p, (c.to_string(), t, 1)))
                 .collect(),
         }
     }
@@ -151,7 +162,7 @@ mod tests {
     #[test]
     fn parses_comm_with_spaces_and_parens() {
         let line = "1234 (my (odd) proc) R 1 1 1 0 -1 0 0 0 0 0 30 12 0 0 20 0 1 0 5 0 0";
-        assert_eq!(parse_proc(line), Some(("my (odd) proc".into(), 42)));
+        assert_eq!(parse_proc(line), Some(("my (odd) proc".into(), 42, 5)));
     }
 
     #[test]
@@ -175,6 +186,24 @@ mod tests {
             .map(|u| (u.pid, u.pct.round() as u32))
             .collect();
         assert_eq!(got, [(1, 90), (2, 20)]);
+    }
+
+    #[test]
+    fn diff_ignores_reused_pid() {
+        // same pid, different start time: a new process, not a continuation
+        let a = s(1000, 500, &[(2, "old", 5)]);
+        let mut b = s(1200, 550, &[(2, "new", 500)]);
+        b.procs.get_mut(&2).unwrap().2 = 99;
+        assert!(diff(&a, &b).procs.is_empty());
+    }
+
+    #[test]
+    fn diff_with_no_elapsed_time_is_zero_not_made_up() {
+        let a = s(1000, 500, &[(1, "x", 0)]);
+        let b = s(1000, 500, &[(1, "x", 50)]);
+        let r = diff(&a, &b);
+        assert_eq!(r.busy_pct, 0.0);
+        assert!(r.procs.is_empty());
     }
 
     #[test]

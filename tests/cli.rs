@@ -278,6 +278,7 @@ fn artifacts_lists_idle_projects_but_guard_still_applies() {
     let old = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400 * 60));
     for (name, git_age) in [("idle", Some(old)), ("active", None)] {
         put(h.join(format!("code/{name}/node_modules/x/f")));
+        put(h.join(format!("code/{name}/node_modules/.package-lock.json")));
         put(h.join(format!("code/{name}/package.json")));
         fs::create_dir_all(h.join(format!("code/{name}/.git/logs"))).unwrap();
         for f in ["logs/HEAD", "index"] {
@@ -296,4 +297,34 @@ fn artifacts_lists_idle_projects_but_guard_still_applies() {
         "skipped: modified within 30 days".into(),
     )]);
     assert_eq!(fx.statuses(&["--category", "artifacts"]), want);
+}
+
+#[test]
+fn why_rejects_tiny_interval() {
+    let fx = Fx::new();
+    let out = fx
+        .cmd()
+        .args(["why", "--interval-ms", "0"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8_lossy(&out).contains("--interval-ms must be at least 100"));
+}
+
+#[test]
+fn why_survives_closed_pipe() {
+    let fx = Fx::new();
+    let bin = assert_cmd::cargo::cargo_bin("safesweep");
+    let mut child = std::process::Command::new(bin)
+        .args(["why", "--interval-ms", "200"])
+        .env("HOME", fx.home.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take()); // like `| head -0`: the reader is gone before output arrives
+    let out = child.wait_with_output().unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
 }
