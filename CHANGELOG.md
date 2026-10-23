@@ -2,7 +2,7 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
-## 0.6.0 - unreleased
+## 0.6.0 - 2026-10-23
 
 ### Added
 - `safesweep completions <shell>` and a man page (`safesweep man`); the `.deb`, `.rpm` and release tarballs include them.
