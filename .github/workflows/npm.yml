@@ -1,9 +1,9 @@
 # Publishes the npm packages (`safesweep` and its two platform packages) so npm, pnpm, yarn and bun
 # can install the tool. See npm/build.sh for how they are built from the release binaries.
 # Prereleases go under the `next` dist-tag, so `npm install safesweep` never picks them up.
-# Authenticates with npm trusted publishing (OIDC) first. Only if that fails does it retry with the
-# NPM_TOKEN repository secret, so a mistake in the npmjs.com setting cannot block a release. See
-# npm/publish.sh for the publishing loop. The trusted-publisher setting on npmjs.com names THIS file.
+# Authenticates with npm trusted publishing (OIDC): there is no npm token. See npm/publish.sh for the
+# publishing loop. The trusted-publisher setting of each package on npmjs.com names THIS file, so
+# renaming or splitting it breaks publishing until that setting is updated.
 name: Publish to npm
 
 # Runs after "Release binaries" succeeds (the npm packages are built from those binaries), or by
@@ -60,25 +60,12 @@ jobs:
           dist=latest; [ "$KIND" = prerelease ] && dist=next
           echo "out=$out" >> "$GITHUB_OUTPUT"
           echo "dist=$dist" >> "$GITHUB_OUTPUT"
-      # First choice: npm trusted publishing (OIDC). No token is in the environment, so npm
-      # exchanges this run's identity for a short-lived publish credential. The first successful
-      # publish also validates the trusted-publisher setting on npmjs.com.
+      # npm trusted publishing (OIDC). No token exists anywhere: npm exchanges this run's GitHub
+      # identity for a short-lived publish credential, and the packages are set on npmjs.com to
+      # refuse token publishing. publish.sh skips versions that are already published, so a failed
+      # run can simply be repeated: `gh workflow run npm.yml -f tag=vX.Y.Z`.
       - name: Publish with trusted publishing
-        id: oidc
-        continue-on-error: true
         env:
           OUT: ${{ steps.build.outputs.out }}
           DIST: ${{ steps.build.outputs.dist }}
         run: npm/publish.sh "$TAG" "$DIST" "$OUT"
-      # Fallback: the NPM_TOKEN secret, only if trusted publishing failed. publish.sh skips versions
-      # that are already published, so this publishes only what the step above did not. Delete
-      # the secret (and this step) once trusted publishing has worked for a release.
-      - name: Publish with the token (fallback)
-        if: steps.oidc.outcome == 'failure'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          OUT: ${{ steps.build.outputs.out }}
-          DIST: ${{ steps.build.outputs.dist }}
-        run: |
-          echo "::warning::trusted publishing failed; publishing with NPM_TOKEN"
-          npm/publish.sh "$TAG" "$DIST" "$OUT"
