@@ -142,6 +142,7 @@ const ARTIFACTS: [(&str, &[&str], &[&str]); 3] = [
             ".yarn-integrity",
             ".yarn-state.yml",
             ".modules.yaml",
+            ".bun-tag",
         ],
     ),
     (
@@ -184,16 +185,15 @@ fn idle_artifacts(root: &Path) -> Vec<PathBuf> {
         if !entry.file_type().is_dir() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy();
-        if name.starts_with('.') && name != ".venv"
-            || name == "node_modules" && !is_artifact(&entry)
-        {
-            walk.skip_current_dir();
-        } else if is_artifact(&entry) {
+        if is_artifact(&entry) {
             walk.skip_current_dir();
             if project_idle(entry.path().parent().unwrap_or(root)) {
                 out.push(entry.into_path());
             }
+        } else if entry.file_name().as_encoded_bytes().starts_with(b".")
+            || entry.file_name() == "node_modules"
+        {
+            walk.skip_current_dir();
         }
     }
     out
@@ -205,7 +205,7 @@ fn is_artifact(entry: &walkdir::DirEntry) -> bool {
     let Some(project) = entry.path().parent() else {
         return false;
     };
-    let name = entry.file_name().to_string_lossy();
+    let name = entry.file_name();
     ARTIFACTS.iter().any(|(dir, markers, fingerprints)| {
         *dir == name
             && markers.iter().any(|m| project.join(m).is_file())
@@ -637,6 +637,35 @@ mod tests {
         assert_eq!(
             find(t.path(), &Matcher::NamedDirs("__pycache__")),
             vec![shown]
+        );
+    }
+
+    #[test]
+    fn idle_artifacts_skips_non_artifact_venv_and_does_not_descend() {
+        let t = tempfile::tempdir().unwrap();
+        // A .venv that is not a real artifact (e.g. hand-made, no pyvenv.cfg)
+        let venv = t.path().join("myproj/.venv");
+        fs::create_dir_all(&venv).unwrap();
+        // A nested project inside the non-artifact .venv should not be discovered because
+        // hidden directories and build dirs must not be descended into
+        project(&venv, "nested", "package.json", "node_modules", Some(60));
+        assert!(find(t.path(), &Matcher::IdleArtifacts).is_empty());
+    }
+
+    #[test]
+    fn idle_artifacts_recognises_bun_tag() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("bun_app");
+        fs::create_dir_all(p.join("node_modules")).unwrap();
+        fs::write(p.join("package.json"), "x").unwrap();
+        fs::write(p.join("node_modules/.bun-tag"), "").unwrap();
+        fs::create_dir_all(p.join(".git/logs")).unwrap();
+        let old = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400 * 60));
+        fs::write(p.join(".git/index"), "x").unwrap();
+        set_file_mtime(p.join(".git/index"), old).unwrap();
+        assert_eq!(
+            find(t.path(), &Matcher::IdleArtifacts),
+            vec![p.join("node_modules")]
         );
     }
 

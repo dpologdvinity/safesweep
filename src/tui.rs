@@ -430,8 +430,10 @@ fn scan(
 /// Returns an error if the terminal cannot be set up, drawn to or read from.
 pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Result<bool> {
     let mut terminal = ratatui::try_init()?;
+    let mut ctx = ctx.clone();
     let result = (|| -> io::Result<bool> {
-        let Some(rows) = scan(&mut terminal, rules, ctx)? else {
+        ctx.now = std::time::SystemTime::now();
+        let Some(rows) = scan(&mut terminal, rules, &ctx)? else {
             return Ok(false);
         };
         let mut app = App::new(rows);
@@ -439,12 +441,15 @@ pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Resul
             terminal.draw(|f| draw(f, &mut app))?;
             if let Event::Key(key) = event::read()?
                 && let Some(code) = translate(key)
-                && app.handle_key(code, ctx, manifest_dir) == Action::Quit
             {
-                return Ok(app.failed);
+                ctx.now = std::time::SystemTime::now();
+                if app.handle_key(code, &ctx, manifest_dir) == Action::Quit {
+                    return Ok(app.failed);
+                }
             }
             if app.needs_rescan {
-                match scan(&mut terminal, rules, ctx)? {
+                ctx.now = std::time::SystemTime::now();
+                match scan(&mut terminal, rules, &ctx)? {
                     Some(rows) => app.set_rows(rows),
                     None => return Ok(app.failed),
                 }
@@ -617,6 +622,26 @@ mod tests {
         a.set_rows(collect(&rules, &c));
         assert!(!a.needs_rescan && a.rows.is_empty() && a.state.selected().is_none());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "manifest written");
+    }
+
+    #[test]
+    fn delete_manifest_name_matches_ctx_now() {
+        let (t, mut c, rules, _) = fixture();
+        let dir = t.path().join("state");
+        let future_now = SystemTime::now() + Duration::from_secs(86400 * 20);
+        c.now = future_now;
+        let secs = future_now
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut a = App::new(collect(&rules, &c));
+        for k in [KeyCode::Char(' '), KeyCode::Char('d'), KeyCode::Char('y')] {
+            a.handle_key(k, &c, &dir);
+        }
+        assert!(
+            dir.join(format!("{secs}.log")).exists(),
+            "manifest named from ctx.now"
+        );
     }
 
     #[test]

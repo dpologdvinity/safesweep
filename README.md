@@ -171,7 +171,8 @@ describes the directory. If you keep something valuable there (a large downloade
 it or check `safesweep scan` first: the table shows every candidate.
 
 `pycache` and `artifacts` walk your home directory (skipping hidden directories), so they only run when you
-name them.
+name them. Both rules stay on the filesystem hosting your home directory, so projects on separate mounted
+partitions or drives are deliberately not traversed.
 
 `artifacts` is deliberately strict. A build directory is listed only if a project file sits next to it
 (`package.json` for `node_modules`, `Cargo.toml` for `target`, `pyproject.toml`, `requirements.txt` or
