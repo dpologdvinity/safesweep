@@ -2,6 +2,14 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.4 - 2026-10-24
+
+Packaging only; the program is unchanged.
+
+### Changed
+- The npm packages are published with npm trusted publishing (GitHub's identity, no stored token) first; the
+  `NPM_TOKEN` secret is only a fallback if that fails. The publishing loop is now a tested script (`npm/publish.sh`).
+
 ## 0.6.3 - 2026-10-24
 
 ### Fixed

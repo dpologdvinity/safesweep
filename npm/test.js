@@ -96,3 +96,54 @@ test("a missing platform package is a clear error", () => {
   assert.strictEqual(r.status, 1);
   assert.match(r.stderr, /is not installed/);
 });
+
+// --- npm/publish.sh -------------------------------------------------------------------------
+// Tested with a stand-in `npm` that records its calls, so nothing is ever published.
+
+const { execFileSync } = require("node:child_process");
+
+// Runs publish.sh with a fake `npm`. `published` lists package@version strings that `npm view`
+// should report as existing. Returns the recorded `npm publish` calls, one per line.
+function runPublish(published, dist) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  const log = path.join(dir, "calls.log");
+  for (const p of ["safesweep-linux-x64", "safesweep-linux-arm64", "safesweep"]) {
+    fs.mkdirSync(path.join(dir, "out", p), { recursive: true });
+  }
+  fs.writeFileSync(
+    path.join(bin, "npm"),
+    `#!/bin/sh
+if [ "$1" = view ]; then
+  case " $PUBLISHED " in *" $2 "*) exit 0 ;; esac
+  exit 1
+fi
+echo "$(basename "$PWD") $*" >> "$LOG"
+`,
+    { mode: 0o755 },
+  );
+  execFileSync(path.join(__dirname, "publish.sh"), ["v1.2.3", dist, path.join(dir, "out")], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PUBLISHED: published.join(" "), LOG: log },
+    stdio: "ignore",
+  });
+  return fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
+}
+
+test("publish.sh publishes the platform packages first, then the launcher", () => {
+  assert.deepStrictEqual(runPublish([], "latest"), [
+    "safesweep-linux-x64 publish --provenance --access public --tag latest",
+    "safesweep-linux-arm64 publish --provenance --access public --tag latest",
+    "safesweep publish --provenance --access public --tag latest",
+  ]);
+});
+
+test("publish.sh skips versions that are already on npm and uses the given dist-tag", () => {
+  const calls = runPublish(["safesweep-linux-x64@1.2.3", "safesweep@1.2.3"], "next");
+  assert.deepStrictEqual(calls, ["safesweep-linux-arm64 publish --provenance --access public --tag next"]);
+});
+
+test("publish.sh publishes nothing when everything is already published", () => {
+  const all = ["safesweep-linux-x64@1.2.3", "safesweep-linux-arm64@1.2.3", "safesweep@1.2.3"];
+  assert.deepStrictEqual(runPublish(all, "latest"), []);
+});

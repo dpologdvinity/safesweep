@@ -35,7 +35,7 @@ cargo fmt                                     # format; CI runs `cargo fmt --che
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items   # docs must build, links must resolve
 cargo llvm-cov --summary-only                 # coverage; CI requires at least 90% of lines
 node --test npm/test.js                       # npm launcher tests
-shellcheck -s bash apt/build.sh npm/build.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
+shellcheck -s bash apt/build.sh npm/build.sh npm/publish.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
 ```
 
 CI runs all of these (`.github/workflows/ci.yml`) on every pull request, in stages that stop early on a
