@@ -171,8 +171,10 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
         .par_iter()
         .flat_map_iter(|&rule| {
             let root = rule.root_path(ctx);
+            // Candidates are judged in parallel too: one rule can find thousands (every
+            // `__pycache__` in the home directory), and judging each costs several system calls.
             scan::find(&root, &rule.matcher)
-                .into_iter()
+                .into_par_iter()
                 .map(|path| {
                     // io::Error is not Clone, so rebuild it to report the same failure per candidate
                     let measured = match &mounts {
