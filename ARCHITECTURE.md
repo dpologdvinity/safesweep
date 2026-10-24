@@ -350,7 +350,7 @@ channel then reuses *those* binaries:
 | apt repository | `apt/build.sh`, signed, served from GitHub Pages | `release.yml` |
 | PyPI | `maturin` wheels (glibc and musl) and sdist | `pypi.yml` |
 | npm / pnpm / yarn / bun | `npm/build.sh` repackages the release binaries | `npm.yml` |
-| Homebrew | formula in `dpologdvinity/homebrew-tap`, regenerated from the release | tap repo |
+| Homebrew | formula in `dpologdvinity/homebrew-tap`, regenerated from the release; `release.yml` triggers it | tap repo |
 | Nix | `flake.nix`, built in CI | `ci.yml` |
 | cargo-binstall | `[package.metadata.binstall]` points at the release tarballs | none |
 
