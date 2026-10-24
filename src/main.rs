@@ -67,6 +67,14 @@ fn runtime_error(msg: &str) -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, String> {
     let cmd = cli.cmd.unwrap_or(Cmd::Scan { json: false });
+    if matches!(cmd, Cmd::Completions { .. } | Cmd::Man) && !cli.categories.is_empty() {
+        let name = if matches!(cmd, Cmd::Man) {
+            "man"
+        } else {
+            "completions"
+        };
+        return Err(format!("--category does not apply to {name}"));
+    }
     match cmd {
         Cmd::Completions { shell } => {
             clap_complete::generate(
