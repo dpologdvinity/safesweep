@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn scope_widens_in_use_check_to_project() {
         // a service whose cwd is the project (not the artifact) still needs its dependencies
-        let (t, c) = fixture();
+        let (t, _) = fixture();
         let project = t.path().join("proj");
         fs::create_dir_all(project.join("node_modules")).unwrap();
         let mut child = Command::new("sleep")
@@ -458,7 +458,6 @@ mod tests {
         );
         child.kill().unwrap();
         child.wait().unwrap();
-        let _ = c;
         assert_eq!(r, Err("in use by a process".into()));
     }
 

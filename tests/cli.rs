@@ -81,6 +81,12 @@ impl Fx {
     }
 }
 
+/// Runs `cmd`, asserts that it exits with `code`, and returns what it wrote to stderr.
+fn fails(cmd: &mut Command, code: i32) -> String {
+    let out = cmd.assert().code(code).get_output().stderr.clone();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[test]
 fn scan_json_statuses() {
     let fx = Fx::new();
@@ -110,18 +116,8 @@ fn pycache_is_opt_in() {
 fn rejects_unsafe_tmpdir() {
     let fx = Fx::new();
     for bad in [Path::new("."), fx.home.path(), Path::new("/")] {
-        let out = fx
-            .cmd()
-            .env("TMPDIR", bad)
-            .assert()
-            .code(2)
-            .get_output()
-            .stderr
-            .clone();
-        assert!(
-            String::from_utf8_lossy(&out).contains("error: TMPDIR must be"),
-            "TMPDIR={bad:?}"
-        );
+        let out = fails(fx.cmd().env("TMPDIR", bad), 2);
+        assert!(out.contains("error: TMPDIR must be"), "TMPDIR={bad:?}");
     }
 }
 
@@ -270,29 +266,15 @@ fn clean_dry_run_then_apply() {
 #[test]
 fn unknown_category_exits_2() {
     let fx = Fx::new();
-    let out = fx
-        .cmd()
-        .args(["--category", "nope"])
-        .assert()
-        .code(2)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&out).contains("unknown category 'nope'"));
+    let out = fails(fx.cmd().args(["--category", "nope"]), 2);
+    assert!(out.contains("unknown category 'nope'"));
 }
 
 #[test]
 fn missing_home_exits_2() {
     let fx = Fx::new();
-    let out = fx
-        .cmd()
-        .env_remove("HOME")
-        .assert()
-        .code(2)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&out).contains("error: HOME is not set"));
+    let out = fails(fx.cmd().env_remove("HOME"), 2);
+    assert!(out.contains("error: HOME is not set"));
 }
 
 #[test]
@@ -342,15 +324,8 @@ fn artifacts_lists_idle_projects_but_guard_still_applies() {
 #[test]
 fn why_rejects_tiny_interval() {
     let fx = Fx::new();
-    let out = fx
-        .cmd()
-        .args(["why", "--interval-ms", "0"])
-        .assert()
-        .code(2)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&out).contains("--interval-ms must be at least 100"));
+    let out = fails(fx.cmd().args(["why", "--interval-ms", "0"]), 2);
+    assert!(out.contains("--interval-ms must be at least 100"));
 }
 
 #[test]
@@ -372,15 +347,8 @@ fn why_survives_closed_pipe() {
 #[test]
 fn tui_needs_a_terminal() {
     let fx = Fx::new();
-    let out = fx
-        .cmd()
-        .arg("tui")
-        .assert()
-        .code(2)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&out).contains("error: tui needs an interactive terminal"));
+    let out = fails(fx.cmd().arg("tui"), 2);
+    assert!(out.contains("error: tui needs an interactive terminal"));
 }
 
 #[test]
@@ -422,29 +390,15 @@ fn in_use_seen_through_other_mount_namespace() {
 #[test]
 fn relative_home_exits_2() {
     let fx = Fx::new();
-    let out = fx
-        .cmd()
-        .env("HOME", "rel")
-        .assert()
-        .code(2)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&out).contains("HOME must be an absolute path"));
+    let out = fails(fx.cmd().env("HOME", "rel"), 2);
+    assert!(out.contains("HOME must be an absolute path"));
 }
 
 #[test]
 fn category_with_why_is_an_error() {
     let fx = Fx::new();
-    let out = fx
-        .cmd()
-        .args(["--category", "pip", "why"])
-        .assert()
-        .code(2)
-        .get_output()
-        .stderr
-        .clone();
-    assert!(String::from_utf8_lossy(&out).contains("--category does not apply to why"));
+    let out = fails(fx.cmd().args(["--category", "pip", "why"]), 2);
+    assert!(out.contains("--category does not apply to why"));
 }
 
 #[test]
@@ -506,17 +460,7 @@ fn category_with_completions_and_man_is_an_error() {
         ["--category", "pip", "completions", "bash"].as_slice(),
         ["--category", "pip", "man"].as_slice(),
     ] {
-        let out = fx
-            .cmd()
-            .args(args)
-            .assert()
-            .code(2)
-            .get_output()
-            .stderr
-            .clone();
-        assert!(
-            String::from_utf8_lossy(&out).contains("--category does not apply to"),
-            "{args:?}"
-        );
+        let out = fails(fx.cmd().args(args), 2);
+        assert!(out.contains("--category does not apply to"), "{args:?}");
     }
 }
