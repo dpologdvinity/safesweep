@@ -76,7 +76,10 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Shell scripts
-        run: shellcheck -s bash apt/build.sh npm/build.sh npm/publish.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
+        run: |
+          shellcheck -s bash apt/build.sh npm/build.sh npm/publish.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
+          # the installer is run by whatever /bin/sh is (dash, BusyBox ash, ...): check it as plain POSIX sh
+          shellcheck -s sh install.sh tests/install_test.sh
       - name: Workflow files
         run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
@@ -116,6 +119,18 @@ jobs:
       # `unshare -rm` (mount-namespace and container safety checks) and fail, not skip, on CI.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --locked
+
+  # The curl installer (install.sh) against fake releases: checksum, platform and version refusals.
+  # Run under dash (what /bin/sh is on Debian and Ubuntu) as well as the default shell.
+  install-script:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: sh tests/install_test.sh
+      - run: dash tests/install_test.sh
 
   # The npm launcher is JavaScript; it has its own tests (signal forwarding, exit codes).
   npm-launcher:
@@ -178,7 +193,7 @@ jobs:
 
   # 4. Everything that ships must build. Only runs once lint and tests pass.
   build:
-    needs: [lint, test, npm-launcher, coverage, docs-links]
+    needs: [lint, test, npm-launcher, install-script, coverage, docs-links]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
