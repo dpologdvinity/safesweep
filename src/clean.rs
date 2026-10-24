@@ -1,3 +1,17 @@
+//! Removing candidates, and keeping a record of what was removed.
+//!
+//! [`clean`] is the only code in the crate that deletes anything. It never trusts the earlier
+//! scan: before each removal it measures the candidate again and runs the full
+//! [`crate::guard::check`] again, with a fresh look at running processes. A candidate that was
+//! safe a moment ago but is now in use, or has changed, is skipped.
+//!
+//! # The manifest
+//!
+//! Every removal is written to a log file, the *manifest*, in `~/.local/state/safesweep/`
+//! (one tab-separated line per path). The log is opened before anything is deleted: if it cannot
+//! be created, nothing is removed. If it stops being writable midway, the run stops after
+//! reporting what it just did, so there is never an unrecorded deletion beyond the last one.
+
 use crate::guard::{check, in_use};
 use crate::render::{escape_path, escape_text, human};
 use crate::scan::measure;
@@ -7,14 +21,34 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+/// The result of a [`clean`] run, for the caller to print.
 pub struct Outcome {
+    /// Bytes freed (or, for a dry run, that would be freed).
     pub freed: u64,
+    /// How many candidates were removed.
     pub removed: usize,
+    /// How many removals failed or could not be logged. A candidate skipped by the re-check is
+    /// *not* a failure.
     pub failed: usize,
+    /// One human-readable line per candidate (`removed ...`, `would remove ...`, `skipped ...:
+    /// reason`, `failed ...: error`), plus a final `stopped: ...` line if the log broke.
     pub lines: Vec<String>,
 }
 
-/// Remove the `ok` rows (or report what would go, if `!apply`), re-checking each one first.
+/// Removes the candidates in `rows` whose status is `ok`, or reports what would be removed.
+///
+/// With `apply` false this is a dry run: nothing is touched and no manifest is written.
+///
+/// With `apply` true, each candidate is re-measured and re-checked (see the module docs), then
+/// removed: a directory with all its contents, or a single file. The removal is recorded in the
+/// manifest in `manifest_dir`. Candidates that fail the re-check are reported as `skipped` and
+/// left alone.
+///
+/// # Errors
+///
+/// Returns an error, with nothing deleted, if the manifest directory or file cannot be created.
+/// A failure to write the manifest *after* a removal is not an error: the removal is reported
+/// in the returned [`Outcome`] together with a `stopped:` line, and the run ends.
 pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::Result<Outcome> {
     let mut out = Outcome {
         freed: 0,
@@ -35,6 +69,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         return Ok(out);
     }
     // The manifest is the only record of what was deleted, so no manifest means no deleting.
+    // The file name is the start time in seconds; two runs in the same second share one file.
     fs::create_dir_all(manifest_dir)?;
     let secs = ctx
         .now
@@ -47,7 +82,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         .open(manifest_dir.join(format!("{secs}.log")))?;
     for r in ok {
         // Fresh /proc snapshot per candidate: a run-wide one goes stale while big trees are deleted.
-        let live = in_use(&ctx.proc_root).ok();
+        let live = in_use(&ctx.proc_root).ok(); // None if /proc is unreadable: check() then refuses
         let root = r.rule.root_path(ctx);
         let fresh = measure(&r.path).map_err(|e| e.to_string()).and_then(|e| {
             check(
@@ -72,6 +107,8 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
                 continue;
             }
         };
+        // symlink_metadata, not metadata: a candidate that became a symlink since the check is
+        // removed as a link and its target is left alone.
         let removed = match fs::symlink_metadata(&r.path) {
             Ok(md) if md.is_dir() => fs::remove_dir_all(&r.path),
             Ok(_) => fs::remove_file(&r.path),

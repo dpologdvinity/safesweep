@@ -1,3 +1,29 @@
+//! `safesweep`: clean caches and temporary files that are provably safe to delete.
+//!
+//! This crate is the library behind the `safesweep` command-line tool. Its main entry points
+//! are [`collect`], which finds and judges every candidate, and [`clean::clean`], which removes
+//! the ones judged safe. The binary (`src/main.rs`) is a thin command-line wrapper around them.
+//!
+//! # How a run works
+//!
+//! ```text
+//!  rules ──► scan::find ──► scan::measure ──► guard::check ──► Row ──► render / tui / clean
+//!  (what)    (candidates)    (what is in it)   (safe? why not?)  (one per candidate)
+//! ```
+//!
+//! 1. [`rules::RULES`] lists the locations the tool knows how to clean.
+//! 2. [`scan`] finds the candidate paths under each rule and measures them. It only observes.
+//! 3. [`guard`] turns each measurement into a verdict: `ok`, or the reason to skip.
+//! 4. [`collect`] bundles the result as one [`Row`] per candidate, largest first.
+//! 5. [`render`] prints the rows, [`tui`] lets the user pick from them, and [`clean`] removes the
+//!    chosen ones, re-checking each one first.
+//!
+//! The separate [`why`] module reports what is using the CPU and shares no state with the rest.
+//!
+//! See `ARCHITECTURE.md` in the repository for the design in more detail.
+
+#![warn(missing_docs)]
+
 use rayon::prelude::*;
 use rules::{Regen, Rule};
 use serde::{Serialize, Serializer};
@@ -13,18 +39,38 @@ pub mod tui;
 pub mod why;
 pub mod wsl;
 
-/// Everything that depends on the environment, so tests can supply their own.
+/// Everything about the environment that the tool depends on, gathered in one place.
+///
+/// Code takes a `Ctx` instead of reading the environment itself, so tests can supply a fake
+/// home directory, a fake clock and a fake `/proc`, and so the real values are validated once,
+/// in [`Ctx::from_env`].
 #[derive(Clone)]
 pub struct Ctx {
+    /// The user's home directory. Always an absolute path.
     pub home: PathBuf,
+    /// The temporary directory the `tmp` rule cleans (`$TMPDIR`, or `/tmp`).
     pub tmp: PathBuf,
+    /// Where the process information is read from. Always `/proc` outside tests.
     pub proc_root: PathBuf,
+    /// The effective user id of this process. Zero means running as root.
     pub euid: u32,
+    /// "Now", used to decide how old files are. Tests move it forward to age files that cannot
+    /// be back-dated.
     pub now: SystemTime,
 }
 
-/// As root, every path under HOME is trusted, so HOME itself must belong to root:
-/// `sudo -E` keeps the invoking user's HOME, and that user could point `~/.cache` anywhere.
+/// Refuses to run as root with a home directory owned by someone else.
+///
+/// Root skips the ownership check, so every path under `home` would be trusted. `sudo -E` keeps
+/// the invoking user's `HOME`, and that user could point `~/.cache` at a system directory and
+/// have root delete its contents. Requiring `home` to belong to root closes that hole.
+///
+/// Does nothing when `euid` is not 0.
+///
+/// # Errors
+///
+/// Returns an explanation (mentioning `sudo -H`) if running as root and `home` is not owned by
+/// root or cannot be inspected.
 pub fn check_root_home(euid: u32, home: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     if euid != 0 {
@@ -40,6 +86,16 @@ pub fn check_root_home(euid: u32, home: &Path) -> Result<(), String> {
 }
 
 impl Ctx {
+    /// Builds the context from the real environment and refuses anything unsafe.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message (printed to the user, exit code 2) if:
+    /// - `HOME` is unset, empty or relative: rules are relative to it, and an empty or relative
+    ///   value would make them act on the current directory;
+    /// - running as root with a `HOME` not owned by root (see [`check_root_home`]);
+    /// - `TMPDIR` is relative, is `/`, or contains `HOME`: the `tmp` rule would then sweep
+    ///   real data.
     pub fn from_env() -> Result<Ctx, String> {
         // An empty HOME would make `Root::Home("")` the current directory.
         let home = std::env::var_os("HOME")
@@ -71,26 +127,43 @@ impl Ctx {
     }
 }
 
-/// One candidate as shown by `scan` and acted on by `clean`.
+/// One candidate: the unit that `scan` lists, the TUI shows and `clean` acts on.
+///
+/// This is also the shape of the `scan --json` output.
 #[derive(Serialize, Clone)]
 pub struct Row {
+    /// The id of the rule that found it (`pip`, `tmp`, ...).
     pub category: &'static str,
+    /// The candidate path. Serialized with unprintable characters escaped (see [`render::escape_path`]).
     #[serde(serialize_with = "lossy")]
     pub path: PathBuf,
+    /// Bytes that deleting it would free (0 if it could not be measured).
     pub bytes: u64,
+    /// What it costs to get the data back.
     pub regen: Regen,
-    /// `"ok"` or `"skipped: <reason>"`.
+    /// `"ok"` if it passed the guard, otherwise `"skipped: <reason>"`.
     pub status: String,
+    /// The rule that found it, which `clean` needs to re-check the candidate. Not serialized.
     #[serde(skip)]
     pub rule: &'static Rule,
 }
 
-// serde_json rejects non-UTF-8 paths, and a file name must never break the output.
+/// Serializes a path as an escaped string. `serde_json` rejects non-UTF-8 paths, and a file name
+/// must never be able to break the output or fake extra lines.
 fn lossy<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&render::escape_path(path))
 }
 
-/// Scan and guard every candidate of `rules`, largest first.
+/// Finds every candidate of `rules`, judges each one, and returns them largest first.
+///
+/// Rules are scanned in parallel. Every candidate yields a [`Row`], never an error: one that
+/// cannot be measured or fails the guard becomes a row with a `skipped: <reason>` status, so the
+/// user can see why. The returned list is free of overlaps: if one candidate lies inside
+/// another found by a different rule (a `__pycache__` inside a `~/.cache` entry), only the
+/// outer one is kept, so nothing is counted or deleted twice.
+///
+/// `/proc` and the mount table are read once for the whole scan. If either cannot be read, every
+/// candidate is reported as unverifiable instead.
 pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
     let live = guard::in_use(&ctx.proc_root).ok();
     let mounts = scan::mount_points();
@@ -101,6 +174,7 @@ pub fn collect(rules: &[&'static Rule], ctx: &Ctx) -> Vec<Row> {
             scan::find(&root, &rule.matcher)
                 .into_iter()
                 .map(|path| {
+                    // io::Error is not Clone, so rebuild it to report the same failure per candidate
                     let measured = match &mounts {
                         Ok(m) => scan::measure_with(&path, m),
                         Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),

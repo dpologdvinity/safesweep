@@ -1,3 +1,21 @@
+//! The safety guard: the one place that decides whether a candidate may be deleted.
+//!
+//! [`check`] takes what [`crate::scan::measure`] observed about a candidate ([`Entry`]) and
+//! returns `Ok(())` or the reason to skip it. Every rule is checked here and nowhere else, and
+//! `clean` runs the same check again immediately before each removal, so a candidate can only
+//! be deleted if it passes at the last possible moment.
+//!
+//! The guard is deliberately one-sided. It can say "no" for a wrong reason (a candidate is
+//! skipped that could have been deleted); it must never say "yes" for a wrong reason. When
+//! something cannot be verified, the answer is "no".
+//!
+//! # What "in use" means
+//!
+//! A candidate is in use if any running process of the current user has a file inside it open,
+//! has it mapped into memory, is running a program from it, or has it as its working
+//! directory. [`in_use`] reads that from `/proc` once, and [`check`] matches candidates against
+//! it by path and by inode (see [`InUse`] for why both).
+
 use crate::Ctx;
 use crate::scan::Entry;
 use std::collections::HashSet;
@@ -8,17 +26,33 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// What running processes are using, gathered once from `/proc`.
+///
+/// The same set of files is recorded two ways, because each catches what the other misses:
+///
+/// - **By path**, as the process sees it. Simple, and works for ordinary processes.
+/// - **By inode** (device number plus inode number). A process in another mount namespace,
+///   such as a container, a `systemd` service with a private `/tmp`, or `unshare -m`, writes
+///   paths from its own point of view (`/app/...`), which never match the host's paths. The
+///   inode is the same however the file is reached.
 pub struct InUse {
-    /// Targets of fd/cwd/exe links and mapped files, as text in each process's own view.
+    /// Target of every open file, working directory, executable and memory-mapped file, as text
+    /// in each process's own view.
     pub paths: Vec<PathBuf>,
-    /// The same objects as `(dev, inode)`. Paths of a process in another mount namespace
-    /// (podman, `unshare -m`, PrivateTmp) are written in its own view and never match host
-    /// paths; the inode does.
+    /// The same objects as `(device, inode)` pairs.
     pub inodes: HashSet<(u64, u64)>,
 }
 
-/// Every file a process holds open, maps, runs, or uses as its cwd.
-/// Errs only if `proc_root` itself is unreadable; unreadable processes are ignored.
+/// Reads everything that running processes have open, mapped, executing, or as their working
+/// directory, from the process tree in `proc_root` (normally `/proc`).
+///
+/// Processes that cannot be inspected (other users' processes when not running as root, or
+/// ones that exit while being read) are skipped silently: they cannot be seen, and the tool
+/// documents that it only protects against processes it can see.
+///
+/// # Errors
+///
+/// Returns an error only if `proc_root` itself cannot be read. Callers must then treat every
+/// candidate as unverifiable, because "nothing is open" cannot be told from "cannot look".
 pub fn in_use(proc_root: &Path) -> io::Result<InUse> {
     let mut out = InUse {
         paths: Vec::new(),
@@ -38,7 +72,7 @@ pub fn in_use(proc_root: &Path) -> io::Result<InUse> {
             .bytes()
             .all(|b| b.is_ascii_digit())
         {
-            continue;
+            continue; // not a process directory (/proc/stat, /proc/self, ...)
         }
         let dir = pid.path();
         for fd in fs::read_dir(dir.join("fd")).into_iter().flatten().flatten() {
@@ -56,7 +90,11 @@ pub fn in_use(proc_root: &Path) -> io::Result<InUse> {
     Ok(out)
 }
 
-/// `(dev, inode)` of one `/proc/<pid>/maps` line: fields 4 (`major:minor` in hex) and 5.
+/// The `(device, inode)` pair on one line of `/proc/<pid>/maps`, or `None` for anonymous
+/// mappings (inode 0, such as the heap) and malformed lines.
+///
+/// A line looks like `7f00-7f01 r--p 00000000 08:20 1234   /path/to/lib.so`. The device is
+/// field 4 as `major:minor` in hexadecimal, the inode is field 5.
 fn map_inode(line: &str) -> Option<(u64, u64)> {
     let mut f = line.split_whitespace().skip(3);
     let (major, minor) = f.next()?.split_once(':')?;
@@ -68,8 +106,12 @@ fn map_inode(line: &str) -> Option<(u64, u64)> {
     (ino != 0).then(|| (libc::makedev(major, minor) as u64, ino))
 }
 
-/// Path column of one `/proc/<pid>/maps` line, if it names a file.
-/// The path is everything after the 5th field, so it may contain spaces.
+/// The file path on one line of `/proc/<pid>/maps`, or `None` if the mapping is not a file
+/// (`[heap]`, `[stack]`, anonymous memory).
+///
+/// The path is everything after the fifth field, so it may contain spaces. A trailing
+/// ` (deleted)` that the kernel appends for an unlinked file is removed, so a library that was
+/// deleted while still mapped still matches its old location.
 fn map_path(line: &str) -> Option<PathBuf> {
     let mut rest = line;
     for _ in 0..5 {
@@ -80,9 +122,40 @@ fn map_path(line: &str) -> Option<PathBuf> {
     path.starts_with('/').then(|| PathBuf::from(path))
 }
 
-/// `Ok(())` if the candidate is safe to delete, else the reason to skip it.
-/// `scope` is the directory that must be unused by any process: the candidate itself, or for
-/// build artifacts their project (a running service has its cwd there, not inside `node_modules`).
+/// Decides whether the candidate `path` may be deleted: `Ok(())` if it may, otherwise
+/// `Err(reason)` with a short message that is shown to the user as the skip reason.
+///
+/// The checks run in this order and the first failure wins:
+///
+/// 1. The candidate is not a symbolic link.
+/// 2. The candidate lies inside its rule's root directory after resolving symlinks in the
+///    path. As root, the root directory must also not itself be reached through a symlink.
+/// 3. As root, the candidate is not in the temporary directory (see below).
+/// 4. As an ordinary user, every file in the tree belongs to that user.
+/// 5. Nothing in the tree changed within `min_age_days`.
+/// 6. The tree holds no socket or named pipe.
+/// 7. The open-file information is available (`in_use` is `Some`).
+/// 8. No running process uses the tree, or `scope` (below), by path or by inode.
+///
+/// # Arguments
+///
+/// - `path`: the candidate. It is never followed if it is a symlink.
+/// - `scope`: the directory that must be unused by any process. Usually the same as `path`.
+///   For build directories it is the whole project: a running server has its working directory
+///   in the project, not inside `node_modules`, yet deleting its dependencies would break it.
+/// - `entry`: what [`crate::scan::measure`] observed about `path`.
+/// - `root`: the rule's root directory that `path` must stay inside.
+/// - `min_age_days`: how long the whole tree must have been unchanged.
+/// - `ctx`: the environment (current time, user id, temp directory).
+/// - `in_use`: what processes are using, from [`in_use`]; `None` if `/proc` was unreadable.
+///
+/// # Why root is treated differently
+///
+/// Root skips the owner check (it may delete anything), so everything else must be stricter:
+/// the rule root may not be a symlink, because a user-controlled `~/.cache -> /var/lib` would
+/// otherwise turn system directories into "cache entries". The temporary directory is refused
+/// outright, because for root `/proc` shows paths from containers and services with a private
+/// `/tmp` in their own view, so their live files cannot be recognised there.
 pub fn check(
     path: &Path,
     scope: &Path,
@@ -137,7 +210,8 @@ pub fn check(
     Ok(())
 }
 
-/// Resolves symlinks in the parent only, so the candidate itself is never followed.
+/// Resolves symbolic links in the parent directory of `path` and appends the final name
+/// unchanged, so the candidate itself is never followed even if it is a symlink.
 fn canonical(path: &Path) -> io::Result<PathBuf> {
     match (path.parent(), path.file_name()) {
         (Some(parent), Some(name)) => Ok(fs::canonicalize(parent)?.join(name)),
@@ -146,6 +220,8 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
+/// Unit tests. Each builds a candidate in a temporary directory and runs the real [`check`]
+/// against real `/proc` data (open files, working directories of child processes).
 mod tests {
     use super::*;
     use crate::scan::measure;
