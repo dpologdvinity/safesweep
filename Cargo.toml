@@ -2,7 +2,7 @@
 # (src/main.rs, the command line). See ARCHITECTURE.md. Release steps are in RELEASING.md.
 [package]
 name = "safesweep"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 # let-chains in `if let ... && let ...` need 1.88
 rust-version = "1.88"
@@ -10,7 +10,7 @@ description = "Clean caches and temp files that are provably safe to delete"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 # packaging and demo files for other channels; not part of the crate
-exclude = ["/demo", "/npm", "/apt", "/flake.nix", "/pyproject.toml", "/.github", "/RELEASING.md", "/packaging"]
+exclude = ["/demo", "/npm", "/apt", "/flake.nix", "/pyproject.toml", "/.github", "/RELEASING.md", "/packaging", "/CONTRIBUTING.md", "/SECURITY.md", "/lychee.toml"]
 repository = "https://github.com/dpologdvinity/safesweep"
 keywords = ["cache", "cleanup", "disk", "wsl", "cli"]
 categories = ["command-line-utilities", "filesystem"]

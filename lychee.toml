@@ -1,0 +1,11 @@
+# Link checker settings (https://lychee.cli.rs), used by CI and by `lychee README.md ...`.
+# Checks that every link in the documentation resolves, including in-page #anchors.
+include_fragments = "full"
+no_progress = true
+max_retries = 2
+timeout = 20
+
+# Sites that reject automated requests although the page exists.
+exclude = [
+  '^https://www\.npmjs\.com/',
+]

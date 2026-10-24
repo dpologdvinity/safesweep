@@ -2,7 +2,8 @@
 #
 # Stages, in order (a failing stage stops the ones after it, so a broken change fails fast):
 #   1. setup     the environment installs, Cargo.lock is in sync, dependencies download (and are cached)
-#   2. lint      format, clippy (also enforces documentation), rustdoc, shell scripts, workflows
+#   2. lint      format, clippy (also enforces documentation), rustdoc, shell scripts, workflows,
+#                and a check that every link in the documentation resolves
 #   3. test      the full test suite on the newest stable Rust and on the oldest supported one
 #      coverage  the same tests with line coverage; fails below 90%
 #   4. build     release binary, .deb, .rpm, Python wheel, Nix package: everything that ships must build
@@ -78,6 +79,19 @@ jobs:
         run: shellcheck -s bash apt/build.sh npm/build.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
       - name: Workflow files
         run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+  # Every link in the documentation, including in-page anchors, must resolve.
+  docs-links:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: --config lychee.toml README.md ARCHITECTURE.md CONTRIBUTING.md SECURITY.md RELEASING.md CHANGELOG.md
+          fail: true
 
   # 3a. The test suite, on the newest stable Rust and on `rust-version` from Cargo.toml (the oldest
   # compiler the project promises to support). One job per toolchain; if one fails, stop the other.
@@ -164,7 +178,7 @@ jobs:
 
   # 4. Everything that ships must build. Only runs once lint and tests pass.
   build:
-    needs: [lint, test, npm-launcher, coverage]
+    needs: [lint, test, npm-launcher, coverage, docs-links]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
