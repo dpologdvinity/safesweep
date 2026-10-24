@@ -69,9 +69,10 @@ pub fn sample(proc_root: &Path) -> io::Result<Sample> {
             continue;
         };
         // processes can exit between listing and reading
-        if let Some(p) = fs::read_to_string(dir.path().join("stat"))
+        // read as bytes: the process name may be any bytes, and read_to_string would drop it
+        if let Some(p) = fs::read(dir.path().join("stat"))
             .ok()
-            .and_then(|s| parse_proc(&s))
+            .and_then(|b| parse_proc(&String::from_utf8_lossy(&b)))
         {
             procs.insert(pid, p);
         }
@@ -254,5 +255,25 @@ mod tests {
         );
         assert_eq!(command_line(b"", "kworker/0:1"), "[kworker/0:1]");
         assert_eq!(command_line(b"", "x\x1by"), "[x\\u{1b}y]");
+    }
+
+    #[test]
+    fn sample_keeps_processes_whose_name_is_not_utf8() {
+        // any process can set its name (comm) to arbitrary bytes; it must not vanish from the list
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("stat"),
+            "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 100 0 50 800 50 0 0 0 0 0\n",
+        )
+        .unwrap();
+        fs::create_dir(root.path().join("4242")).unwrap();
+        let mut stat = b"4242 (bad".to_vec();
+        stat.extend_from_slice(b"\xff\xfe");
+        stat.extend_from_slice(b") S 1 1 1 0 -1 0 0 0 0 0 30 12 0 0 20 0 1 0 5 0 0\n");
+        fs::write(root.path().join("4242/stat"), stat).unwrap();
+        let smp = sample(root.path()).unwrap();
+        let (comm, ticks, _) = &smp.procs[&4242];
+        assert!(comm.starts_with("bad"), "{comm:?}");
+        assert_eq!(*ticks, 42);
     }
 }
