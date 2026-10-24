@@ -29,6 +29,15 @@ function project(body) {
   return { dir, launcher: path.join(bin, "safesweep.js") };
 }
 
+// What the kernel says about a process, for failure messages ("S sleeping", "Z zombie", ...).
+const procState = (pid) => {
+  try {
+    return fs.readFileSync(`/proc/${pid}/status`, "utf8").split("\n").filter((l) => /^(State|PPid|SigBlk|SigIgn|SigCgt):/.test(l)).join("; ");
+  } catch {
+    return "gone";
+  }
+};
+
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -37,7 +46,10 @@ const alive = (pid) => {
     return false;
   }
 };
-const until = async (cond, ms = 3000) => {
+// Polls `cond` until it is true or `ms` pass; returns its last value. The default is generous on
+// purpose: a loaded machine can take seconds to start a process, and a wait that ends as soon
+// as the condition holds costs nothing when everything is fast.
+const until = async (cond, ms = 20000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (cond()) return true;
@@ -55,17 +67,25 @@ test("passes arguments, stdout and the exit code through", () => {
 
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   test(`${sig} to the launcher stops the native process too`, async () => {
+    // the fake binary records its own process id, then becomes a long `sleep`
     const { dir, launcher } = project(`echo $$ > "${"${PIDFILE}"}"; exec sleep 60`);
     const pidfile = path.join(dir, "pid");
     const child = spawn(process.execPath, [launcher], { env: { ...process.env, PIDFILE: pidfile }, stdio: "ignore" });
-    assert.ok(await until(() => fs.existsSync(pidfile) && fs.readFileSync(pidfile, "utf8").trim()), "child started");
-    const native = Number(fs.readFileSync(pidfile, "utf8"));
-    const exited = new Promise((res) => child.on("exit", (code, signal) => res({ code, signal })));
-    child.kill(sig);
-    const { code, signal } = await exited;
-    assert.ok(await until(() => !alive(native)), `native process ${native} still running after ${sig}`);
-    // like a shell: killed by the signal, or 128+n
-    assert.ok(signal === sig || code === 128 + os.constants.signals[sig], `exit was code=${code} signal=${signal}`);
+    let native;
+    try {
+      assert.ok(await until(() => fs.existsSync(pidfile) && fs.readFileSync(pidfile, "utf8").trim()), "child started");
+      native = Number(fs.readFileSync(pidfile, "utf8"));
+      const exited = new Promise((res) => child.on("exit", (code, signal) => res({ code, signal })));
+      child.kill(sig);
+      const { code, signal } = await exited;
+      assert.ok(await until(() => !alive(native)), `native process ${native} still running after ${sig}: ${procState(native)}`);
+      // like a shell: killed by the signal, or 128+n
+      assert.ok(signal === sig || code === 128 + os.constants.signals[sig], `exit was code=${code} signal=${signal}`);
+    } finally {
+      // never leave a stray `sleep` behind, even when an assertion above failed
+      child.kill("SIGKILL");
+      if (native && alive(native)) process.kill(native, "SIGKILL");
+    }
   });
 }
 

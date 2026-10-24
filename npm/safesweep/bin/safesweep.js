@@ -30,10 +30,24 @@ try {
 }
 // Async spawn, not spawnSync: a signal sent to this launcher (`timeout`, Ctrl-C, a service stop)
 // must reach the native process, or it would keep deleting after its parent is gone.
-const child = spawn(bin, process.argv.slice(2), { stdio: "inherit" });
-const forward = (sig) => () => child.kill(sig);
-const handlers = ["SIGTERM", "SIGINT", "SIGHUP"].map((sig) => [sig, forward(sig)]);
+//
+// The handlers are installed BEFORE the child is spawned. Installed afterwards, there is a small
+// window in which the child is already running but a signal would still hit Node's default
+// action and kill this launcher outright, leaving the native process orphaned and unstoppable.
+// On a busy machine that window is large enough to hit (it was found by a flaky test). A signal
+// that arrives before the child exists is remembered and delivered as soon as it does.
+const signals = ["SIGTERM", "SIGINT", "SIGHUP"];
+let child = null;
+let early = null; // a signal that arrived before the child was spawned
+const forward = (sig) => () => {
+  if (child) child.kill(sig);
+  else early = sig;
+};
+const handlers = signals.map((sig) => [sig, forward(sig)]);
 for (const [sig, h] of handlers) process.on(sig, h);
+
+child = spawn(bin, process.argv.slice(2), { stdio: "inherit" });
+if (early) child.kill(early);
 child.on("error", (e) => {
   console.error(`safesweep: ${e.message}`);
   process.exit(1);
