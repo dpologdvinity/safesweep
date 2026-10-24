@@ -20,8 +20,8 @@ Publishing the release does the rest:
 | `npm.yml` | npm packages, after `release.yml` succeeds |
 | `dpologdvinity/homebrew-tap` | formula, picked up within 6 hours (or run its `update-safesweep` workflow) |
 
-Before anything publishes, the `verify` job (and the same check in `pypi.yml` and `npm.yml`) refuses a
-tag that is not `vMAJOR.MINOR.PATCH[-pre]` or does not match `Cargo.toml`. A tag with a `-pre` suffix is
+Before anything publishes, `verify-tag.yml` (called first by `release.yml`, `pypi.yml` and `npm.yml`)
+refuses a tag that is not `vMAJOR.MINOR.PATCH[-pre]` or does not match `Cargo.toml`. A tag with a `-pre` suffix is
 a prerelease: it gets binaries, crates.io and PyPI, goes to npm under the `next` dist-tag, and does
 not touch the apt repo or Homebrew.
 
