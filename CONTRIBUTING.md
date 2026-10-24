@@ -36,6 +36,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items   # docs
 cargo llvm-cov --summary-only                 # coverage; CI requires at least 90% of lines
 node --test npm/test.js                       # npm launcher tests
 shellcheck -s bash apt/build.sh npm/build.sh npm/publish.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
+shellcheck -s sh install.sh tests/install_test.sh    # the installer is plain POSIX sh
+sh tests/install_test.sh                             # installer tests (fake releases, no network)
 ```
 
 CI runs all of these (`.github/workflows/ci.yml`) on every pull request, in stages that stop early on a

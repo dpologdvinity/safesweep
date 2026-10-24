@@ -15,7 +15,7 @@ Publishing the release does the rest:
 
 | Workflow | Publishes |
 |---|---|
-| `release.yml` | static binaries, `.deb`, `.rpm` on the release; crates.io; the apt repo on GitHub Pages |
+| `release.yml` | static binaries, `.deb`, `.rpm` and `install.sh` on the release; crates.io; the apt repo on GitHub Pages |
 | `pypi.yml` | wheels and sdist to PyPI |
 | `npm.yml` | npm packages, after `release.yml` succeeds (trusted publishing; there is no npm token) |
 | `dpologdvinity/homebrew-tap` | formula; `release.yml` asks the tap to update right away (it also polls every 6 hours) |
