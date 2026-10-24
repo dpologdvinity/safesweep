@@ -6,6 +6,7 @@
 
    ```sh
    v=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+   : "${v:?could not read the version; is cargo on PATH?}"
    git tag -a "v$v" -m "safesweep $v" && git push origin "v$v"
    gh release create "v$v" --title "safesweep $v" --notes-file <(sed -n "/^## $v/,/^## /p" CHANGELOG.md | sed '1d;$d')
    ```
@@ -19,8 +20,15 @@ Publishing the release does the rest:
 | `npm.yml` | npm packages, after `release.yml` succeeds |
 | `dpologdvinity/homebrew-tap` | formula, picked up within 6 hours (or run its `update-safesweep` workflow) |
 
-Each step skips what is already published, so re-running a workflow is safe. Re-runs never
-replace release assets: rebuilt binaries are not byte-identical, and Homebrew and apt pin checksums.
+Before anything publishes, the `verify` job (and the same check in `pypi.yml` and `npm.yml`) refuses a
+tag that is not `vMAJOR.MINOR.PATCH[-pre]` or does not match `Cargo.toml`. A tag with a `-pre` suffix is
+a prerelease: it gets binaries, crates.io and PyPI, goes to npm under the `next` dist-tag, and does
+not touch the apt repo or Homebrew.
 
-To publish one channel for an existing release: `gh workflow run npm.yml -f tag=vX.Y.Z`
-(same for `pypi.yml` and `release.yml`).
+Re-running is safe: each step skips what is already published, and release assets are never replaced
+(rebuilt binaries are not byte-identical, and Homebrew and apt pin checksums; a missing `.sha256` is
+derived from the tarball already on the release). The apt repo holds only the latest stable release, so
+re-running `release.yml` for an older tag leaves it alone.
+
+To publish one channel for an existing release: `gh workflow run npm.yml -f tag=vX.Y.Z` (same for
+`pypi.yml` and `release.yml`). Tags older than v0.6.0 predate the packaging scripts and cannot be re-run.

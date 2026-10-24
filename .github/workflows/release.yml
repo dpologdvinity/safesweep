@@ -6,14 +6,34 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to attach binaries to (e.g. v0.3.1)
+        description: Existing release tag to (re)publish (e.g. v0.6.0). Only tags made with this workflow in place work.
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Everything below waits for this: a tag that is not vX.Y.Z[-pre], or does not match Cargo.toml,
+  # must not publish binaries, packages, the apt repo or a crate.
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.v.outputs.kind }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Tag must look like a release tag before it is used anywhere
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::'$TAG' is not a release tag"; exit 1; }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - id: v
+        run: echo "kind=$(.github/scripts/verify-tag.sh "$TAG")" >> "$GITHUB_OUTPUT"
+
   linux:
+    needs: verify
     strategy:
       matrix:
         include:
@@ -22,19 +42,22 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false # build scripts of dependencies run below; keep the token out of .git
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:
-          tool: cargo-deb,cargo-generate-rpm
+          tool: cargo-deb@3.8.0,cargo-generate-rpm@0.21.1
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
@@ -56,17 +79,33 @@ jobs:
         # pin the checksums of what was published first.
         run: |
           existing=$(gh release view "$TAG" --json assets -q '.assets[].name')
-          for f in safesweep-*.tar.gz safesweep-*.tar.gz.sha256 safesweep*.deb safesweep*.rpm; do
-            if grep -qxF "$f" <<<"$existing"; then echo "keeping existing $f"; continue; fi
-            gh release upload "$TAG" "$f"
+          have() { grep -qxF "$1" <<<"$existing"; }
+          tarball=$(ls safesweep-*.tar.gz)
+          for f in "$tarball" safesweep*.deb safesweep*.rpm; do
+            if have "$f"; then echo "keeping existing $f"; else gh release upload "$TAG" "$f"; fi
           done
+          if ! have "$tarball.sha256"; then
+            if have "$tarball"; then
+              # an earlier run's tarball is the reference: its checksum, not this run's rebuild
+              d=$(mktemp -d)
+              gh release download "$TAG" -p "$tarball" -D "$d"
+              (cd "$d" && sha256sum "$tarball") > "$tarball.sha256"
+            fi
+            gh release upload "$TAG" "$tarball.sha256"
+          fi
 
   # Signed apt repository on GitHub Pages (gh-pages branch), rebuilt from this release's .debs.
+  # It serves one version, the latest stable release.
   apt:
-    needs: linux
+    needs: [verify, linux]
+    if: needs.verify.outputs.kind == 'stable'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # two runs must not interleave their force-pushes
+    concurrency:
+      group: apt-repo
+      cancel-in-progress: false
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -75,10 +114,17 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false
       - name: Build and publish
         run: |
           if [ -z "$APT_KEY" ]; then echo "::notice::APT_GPG_PRIVATE_KEY not set; skipping apt repo"; exit 0; fi
-          export GNUPGHOME=$(mktemp -d)
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" -q .tag_name)
+          if [ "$TAG" != "$latest" ]; then
+            echo "::notice::$TAG is not the latest release ($latest); leaving the apt repo alone"
+            exit 0
+          fi
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
           gpg --batch --import <<<"$APT_KEY"
           fp=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
           debs=$(mktemp -d) site=$(mktemp -d)
@@ -95,6 +141,7 @@ jobs:
   # crates.io: trusted publishing when it is configured on crates.io, otherwise the
   # CARGO_REGISTRY_TOKEN secret. Skips a version that is already published.
   crates:
+    needs: [verify, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,14 +152,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
       - name: Check version
         id: check
         run: |
-          ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          [ "v$ver" = "$TAG" ] || { echo "::error::tag $TAG does not match Cargo.toml version $ver"; exit 1; }
+          ver=${TAG#v}
           code=$(curl -s -o /dev/null -w '%{http_code}' -A "safesweep-release (github.com/dpologdvinity/safesweep)" "https://crates.io/api/v1/crates/safesweep/$ver")
           if [ "$code" = 200 ]; then echo "safesweep $ver already on crates.io"; echo "skip=true" >> "$GITHUB_OUTPUT"; fi
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6

@@ -462,3 +462,25 @@ fn man_page_is_roff() {
         "mentions the command and subcommands"
     );
 }
+
+#[test]
+fn category_with_completions_and_man_is_an_error() {
+    let fx = Fx::new();
+    for args in [
+        ["--category", "pip", "completions", "bash"].as_slice(),
+        ["--category", "pip", "man"].as_slice(),
+    ] {
+        let out = fx
+            .cmd()
+            .args(args)
+            .assert()
+            .code(2)
+            .get_output()
+            .stderr
+            .clone();
+        assert!(
+            String::from_utf8_lossy(&out).contains("--category does not apply to"),
+            "{args:?}"
+        );
+    }
+}
