@@ -12,9 +12,21 @@ for arch in x64 arm64; do
   triple=$([ $arch = x64 ] && echo x86_64 || echo aarch64)-unknown-linux-musl
   dir="$out/safesweep-linux-$arch"
   mkdir -p "$dir/bin"
-  url="https://github.com/$repo/releases/download/$tag/safesweep-$tag-$triple.tar.gz"
-  curl -fsSL "$url" | tar xz -C "$dir" --strip-components=1 "safesweep-$tag-$triple/safesweep"
+  name="safesweep-$tag-$triple.tar.gz"
+  base="https://github.com/$repo/releases/download/$tag"
+  tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/$name" "$base/$name"
+  curl -fsSL -o "$tmp/$name.sha256" "$base/$name.sha256"
+  # the published checksum must match the tarball we are about to ship inside an npm package
+  (cd "$tmp" && sha256sum -c "$name.sha256")
+  tar xzf "$tmp/$name" -C "$dir" --strip-components=1 "safesweep-$tag-$triple/safesweep"
+  rm -rf "$tmp"
   mv "$dir/safesweep" "$dir/bin/safesweep"
+  chmod 755 "$dir/bin/safesweep"
+  # the binary this runner can execute must report the version being published
+  if [ "$arch" = x64 ] && [ "$(uname -m)" = x86_64 ]; then
+    [ "$("$dir/bin/safesweep" --version)" = "safesweep $ver" ] || { echo "binary version does not match $ver" >&2; exit 1; }
+  fi
   jq -n --arg v "$ver" --arg a "$arch" --arg r "$repo" '{
     name: "safesweep-linux-\($a)", version: $v,
     description: "safesweep binary for Linux \($a); install the safesweep package instead",
