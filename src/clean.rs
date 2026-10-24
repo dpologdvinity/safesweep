@@ -85,6 +85,8 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
     // would go stale as large trees are deleted. See `SnapshotCache` for the trade-off.
     let mut snapshot = SnapshotCache::new(ctx.proc_root.clone(), Duration::from_secs(1));
     for r in ok {
+        // the path as it is printed and logged: control characters escaped (see `escape_path`)
+        let shown = escape_path(&r.path);
         let live = snapshot.get(); // None if /proc is unreadable: check() then refuses
         let root = r.rule.root_path(ctx);
         let fresh = measure(&r.path).map_err(|e| e.to_string()).and_then(|e| {
@@ -102,11 +104,8 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         let entry = match fresh {
             Ok(e) => e,
             Err(reason) => {
-                out.lines.push(format!(
-                    "skipped {}: {}",
-                    escape_path(&r.path),
-                    escape_text(&reason)
-                ));
+                out.lines
+                    .push(format!("skipped {}: {}", shown, escape_text(&reason)));
                 continue;
             }
         };
@@ -118,24 +117,19 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
             Err(e) => Err(e),
         };
         let logged = match &removed {
-            Ok(()) => writeln!(manifest, "{}\t{}", entry.bytes, escape_path(&r.path)),
-            Err(e) => writeln!(manifest, "ERROR\t{}\t{e}", escape_path(&r.path)),
+            Ok(()) => writeln!(manifest, "{}\t{}", entry.bytes, shown),
+            Err(e) => writeln!(manifest, "ERROR\t{}\t{e}", shown),
         };
         match removed {
             Ok(()) => {
-                out.lines.push(format!(
-                    "removed {} {}",
-                    human(entry.bytes),
-                    escape_path(&r.path)
-                ));
+                out.lines
+                    .push(format!("removed {} {}", human(entry.bytes), shown));
                 out.freed += entry.bytes;
                 out.removed += 1;
             }
             Err(e) => {
-                out.lines.push(format!(
-                    "failed {} (may be partly removed): {e}",
-                    escape_path(&r.path)
-                ));
+                out.lines
+                    .push(format!("failed {} (may be partly removed): {e}", shown));
                 out.failed += 1;
             }
         }
@@ -144,7 +138,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         if let Err(e) = logged {
             out.lines.push(format!(
                 "stopped: {} not logged, manifest write failed: {e}",
-                escape_path(&r.path)
+                shown
             ));
             out.failed += 1;
             break;
