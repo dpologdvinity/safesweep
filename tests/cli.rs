@@ -1,3 +1,16 @@
+//! End-to-end tests: they run the real `safesweep` binary against a fake home directory.
+//!
+//! Each test builds a fixture ([`Fx`]) with its own `HOME` and `TMPDIR` in temporary directories,
+//! so nothing here can touch real files. Two limits shape the fixtures:
+//!
+//! - The binary reads the real clock, and a file's inode change time cannot be back-dated, so a
+//!   freshly created file always looks recent. Tests that need an "old" candidate use the
+//!   zero-day `pycache` rule, or check that the age rule *refuses* recent files. The age logic
+//!   itself is tested in the unit tests, where the clock can be moved.
+//! - A few tests need unprivileged mount namespaces (`unshare -rm`). On CI they must run, so being
+//!   unable to use namespaces there fails the test instead of skipping it (see
+//!   [`namespace_policy`]).
+
 use assert_cmd::Command;
 use filetime::{FileTime, set_file_mtime};
 use std::collections::BTreeMap;
@@ -6,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
+/// Sets the modification time of everything under `path` to `days` days ago.
+///
+/// Only the modification time can be changed; the inode change time stays at "now", which is
+/// how `tar -p` or `rsync -a` leave files. The guard treats such a tree as new.
 fn age(path: &Path, days: u32) {
     let when = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400) * days);
     for e in walkdir::WalkDir::new(path).contents_first(true) {
@@ -13,19 +30,31 @@ fn age(path: &Path, days: u32) {
     }
 }
 
+/// Creates a 4 KiB file at `path` (and its parent directories) and returns the path.
 fn put(path: PathBuf) -> PathBuf {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, vec![1u8; 4096]).unwrap();
     path
 }
 
+/// A fake environment: a home directory and a temp directory with a few known candidates.
+///
+/// - `~/.cache/old`: modification time backdated, but changed just now, so still "recent";
+/// - `~/.cache/fresh`: new;
+/// - `proj/__pycache__`: deletable through the zero-day `pycache` rule;
+/// - `busy/__pycache__`: a file inside is held open by the test, so it is in use;
+/// - `$TMPDIR/stale`: backdated like `old`.
 struct Fx {
+    /// The fake `HOME`.
     home: TempDir,
+    /// The fake `TMPDIR`.
     tmp: TempDir,
+    /// Keeps a file inside `busy/__pycache__` open for the life of the fixture.
     _held: File,
 }
 
 impl Fx {
+    /// Builds the fixture described on [`Fx`].
     fn new() -> Fx {
         let (home, tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let h = home.path();
@@ -62,6 +91,7 @@ impl Fx {
             .collect()
     }
 
+    /// A `safesweep` command whose `HOME` and `TMPDIR` point at this fixture.
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("safesweep").unwrap();
         c.env("HOME", self.home.path())
@@ -87,6 +117,7 @@ fn fails(cmd: &mut Command, code: i32) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Default `scan --json`: recent entries are skipped with the age reason, and the opt-in `pycache` rule is absent.
 #[test]
 fn scan_json_statuses() {
     let fx = Fx::new();
@@ -99,6 +130,7 @@ fn scan_json_statuses() {
     assert_eq!(fx.statuses(&[]), want);
 }
 
+/// `--category pycache` finds the `__pycache__` directories: the free one is `ok`, the one a process holds open is skipped as in use.
 #[test]
 fn pycache_is_opt_in() {
     let fx = Fx::new();
@@ -112,6 +144,7 @@ fn pycache_is_opt_in() {
     assert_eq!(fx.statuses(&["--category", "pycache"]), want);
 }
 
+/// A relative `TMPDIR`, `/`, or one containing `HOME` is refused with exit code 2, because the tmp rule would sweep real data.
 #[test]
 fn rejects_unsafe_tmpdir() {
     let fx = Fx::new();
@@ -156,6 +189,7 @@ fn namespaces_usable() -> bool {
     }
 }
 
+/// Without namespace support a test is skipped on a developer machine but fails on CI.
 #[test]
 fn namespace_policy_skips_locally_and_fails_on_ci() {
     assert_eq!(namespace_policy(true, false), Ok(true));
@@ -198,6 +232,7 @@ fn scan_in_namespace(fx: &Fx, setup: &str) -> Option<BTreeMap<String, String>> {
     )
 }
 
+/// A candidate that is itself a mount point is skipped, not deleted (its contents belong to another filesystem).
 #[test]
 fn skips_candidate_that_is_a_mount_point() {
     let fx = Fx::new();
@@ -208,6 +243,7 @@ fn skips_candidate_that_is_a_mount_point() {
     }
 }
 
+/// A candidate with a bind mount inside is skipped, and the data behind the mount survives (device numbers alone cannot see this).
 #[test]
 fn skips_candidate_containing_bind_mount() {
     let fx = Fx::new();
@@ -225,6 +261,7 @@ fn skips_candidate_containing_bind_mount() {
     assert!(precious.exists());
 }
 
+/// `clean` is a dry run and deletes nothing; `--apply` removes only what the rules allow, and the manifest lists exactly the removed paths.
 #[test]
 fn clean_dry_run_then_apply() {
     let fx = Fx::new();
@@ -263,6 +300,7 @@ fn clean_dry_run_then_apply() {
     assert_eq!(removed, ["proj/__pycache__"]);
 }
 
+/// An unknown `--category` is a usage error (exit 2) that lists the valid names.
 #[test]
 fn unknown_category_exits_2() {
     let fx = Fx::new();
@@ -270,6 +308,7 @@ fn unknown_category_exits_2() {
     assert!(out.contains("unknown category 'nope'"));
 }
 
+/// Without `HOME` the program refuses to run (exit 2) instead of treating the current directory as home.
 #[test]
 fn missing_home_exits_2() {
     let fx = Fx::new();
@@ -277,6 +316,7 @@ fn missing_home_exits_2() {
     assert!(out.contains("error: HOME is not set"));
 }
 
+/// `why` prints the busy percentage and the per-program table.
 #[test]
 fn why_reports_cpu() {
     let fx = Fx::new();
@@ -293,6 +333,7 @@ fn why_reports_cpu() {
     assert!(out.contains("PROGRAM"), "{out}");
 }
 
+/// The opt-in `artifacts` rule lists only the idle project, and the guard still skips it because the tree changed recently.
 #[test]
 fn artifacts_lists_idle_projects_but_guard_still_applies() {
     let fx = Fx::new();
@@ -321,6 +362,7 @@ fn artifacts_lists_idle_projects_but_guard_still_applies() {
     assert_eq!(fx.statuses(&["--category", "artifacts"]), want);
 }
 
+/// `why --interval-ms 0` is a usage error: a zero-length sample would print made-up numbers.
 #[test]
 fn why_rejects_tiny_interval() {
     let fx = Fx::new();
@@ -328,6 +370,7 @@ fn why_rejects_tiny_interval() {
     assert!(out.contains("--interval-ms must be at least 100"));
 }
 
+/// `why` does not panic when its output pipe is closed early (`safesweep why | head`).
 #[test]
 fn why_survives_closed_pipe() {
     let fx = Fx::new();
@@ -344,6 +387,7 @@ fn why_survives_closed_pipe() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
 }
 
+/// `tui` refuses to start without a terminal (exit 2) instead of writing control codes to a pipe.
 #[test]
 fn tui_needs_a_terminal() {
     let fx = Fx::new();
@@ -351,6 +395,7 @@ fn tui_needs_a_terminal() {
     assert!(out.contains("error: tui needs an interactive terminal"));
 }
 
+/// A process in another mount namespace sees the candidate under a different path; it is still detected as in use, by inode.
 #[test]
 fn in_use_seen_through_other_mount_namespace() {
     // podman / unshare -m: the process sees the candidate under another path (/mnt here),
@@ -387,6 +432,7 @@ fn in_use_seen_through_other_mount_namespace() {
     assert_eq!(got["proj/__pycache__"], "skipped: in use by a process");
 }
 
+/// A relative `HOME` is a usage error (exit 2).
 #[test]
 fn relative_home_exits_2() {
     let fx = Fx::new();
@@ -394,6 +440,7 @@ fn relative_home_exits_2() {
     assert!(out.contains("HOME must be an absolute path"));
 }
 
+/// `--category` with `why` is an error, because `why` does not use the rule table.
 #[test]
 fn category_with_why_is_an_error() {
     let fx = Fx::new();
@@ -401,6 +448,7 @@ fn category_with_why_is_an_error() {
     assert!(out.contains("--category does not apply to why"));
 }
 
+/// `completions` prints a script for bash, zsh and fish, and rejects an unknown shell (exit 2).
 #[test]
 fn completions_for_each_shell() {
     let fx = Fx::new();
@@ -430,6 +478,7 @@ fn completions_for_each_shell() {
         .code(2);
 }
 
+/// `man` prints a roff man page that mentions the command and its subcommands.
 #[test]
 fn man_page_is_roff() {
     let fx = Fx::new();
@@ -453,6 +502,7 @@ fn man_page_is_roff() {
     );
 }
 
+/// `--category` with `completions` or `man` is an error, like with `why`.
 #[test]
 fn category_with_completions_and_man_is_an_error() {
     let fx = Fx::new();

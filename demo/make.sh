@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Rebuilds demo/demo.gif from real runs in a throwaway home. Needs: cargo build --release, cc, uv.
+# Rebuilds demo/demo.gif (the animation at the top of the README).
+#
+# Usage:   cargo build --release && demo/make.sh
+# Needs:   cc (to build the fake clock), uv (to install Pillow, a Python imaging library),
+#          unshare (user namespaces), and the release binary in target/release.
+#
+# How it works: demo/env.sh builds a throwaway home directory with fake caches and a fake clock;
+# the real binary runs three commands there and its real output is captured; demo/render.py then
+# draws that output as terminal frames. The GIF is drawn rather than screen-recorded because
+# recorders drop frames on a busy machine. Nothing here touches the real home directory.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(mktemp -d)

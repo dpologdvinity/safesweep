@@ -1,3 +1,14 @@
+# Publishes a release. Starts when a GitHub release is published (or by hand for an existing tag).
+#
+# Jobs:
+#   verify  refuses a tag that is not vX.Y.Z[-pre] or does not match Cargo.toml (verify-tag.yml)
+#   linux   builds the static x86_64 and aarch64 binaries, .deb and .rpm, and attaches them to the
+#           release together with checksums. Existing release assets are never replaced.
+#   apt     rebuilds the signed apt repository on GitHub Pages (latest stable release only)
+#   crates  publishes the crate to crates.io (skips a version that is already there)
+# The PyPI and npm packages are published by pypi.yml and npm.yml, which start from the same
+# release. Homebrew follows from its own repository (dpologdvinity/homebrew-tap).
+# See RELEASING.md for how to cut a release and docs/agents/STEPS-FOR-OWNER.md for the secrets.
 name: Release binaries
 
 on:

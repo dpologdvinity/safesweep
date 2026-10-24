@@ -1,4 +1,7 @@
-# Lets `pipx install safesweep` / `uv tool install safesweep` install the Rust binary from PyPI.
+# Python packaging metadata, so `pipx install safesweep` and `uv tool install safesweep` can install
+# the Rust binary from PyPI. There is no Python code: maturin (the build backend) compiles the Rust
+# crate in this repository and packages the executable (`bindings = "bin"`). The version comes
+# from Cargo.toml (`dynamic = ["version"]`), so there is one place to bump it.
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"

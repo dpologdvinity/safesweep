@@ -1,3 +1,8 @@
+# Publishes the npm packages (`safesweep` and its two platform packages) so npm, pnpm, yarn and bun
+# can install the tool. See npm/build.sh for how they are built from the release binaries.
+# Prereleases go under the `next` dist-tag, so `npm install safesweep` never picks them up.
+# Authenticates with npm trusted publishing when it is configured on npmjs.com, otherwise with the
+# NPM_TOKEN repository secret.
 name: Publish to npm
 
 # Runs after "Release binaries" succeeds (the npm packages are built from those binaries), or by

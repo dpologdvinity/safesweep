@@ -1,3 +1,6 @@
+# Nix flake: `nix run github:dpologdvinity/safesweep` builds and runs the program from source.
+# The package version and metadata are read from Cargo.toml, so there is one place to change them.
+# Dependencies are pinned by Cargo.lock (Rust) and flake.lock (nixpkgs); CI builds this flake.
 {
   description = "Clean caches and temp files that are provably safe to delete";
 

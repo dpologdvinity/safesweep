@@ -1,3 +1,8 @@
+# Publishes the Python packages to PyPI, so `pipx install safesweep` and `uv tool install safesweep`
+# work. The packages contain the same Rust binary as the other channels: maturin wraps it in a
+# wheel per platform (glibc and musl, x86_64 and aarch64) plus a source distribution.
+# Starts when a GitHub release is published, or by hand for an existing tag.
+# Needs the PYPI_API_TOKEN repository secret. Uploading skips files that already exist.
 name: Publish to PyPI
 
 on:

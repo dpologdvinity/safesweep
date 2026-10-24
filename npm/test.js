@@ -1,4 +1,11 @@
-// Tests the launcher against a fake platform package: node npm/test.js
+// Tests for the npm launcher (npm/safesweep/bin/safesweep.js).
+//
+// Run with:  node --test npm/test.js     (Node 18 or newer; CI runs it on every pull request)
+//
+// The launcher is tested against a fake platform package: a small shell script in the place the
+// real native binary would be. That checks what the launcher is responsible for (finding the
+// binary, passing arguments, output and exit codes through, forwarding signals, failing clearly)
+// without needing a real build.
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
@@ -7,6 +14,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
+// The platform package name suffix for the machine the tests run on.
 const arch = { x64: "x64", arm64: "arm64" }[process.arch];
 
 // A project dir holding the launcher and a fake `safesweep-linux-<arch>` whose binary is `body`.
