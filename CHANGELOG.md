@@ -2,6 +2,32 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.2 - 2026-10-24
+
+Fixes from a second full review, much faster cleanups, and a documentation overhaul. Upgrade recommended.
+
+### Fixed
+- `why` dropped any process whose name was not valid UTF-8 from the list (this was listed as fixed in
+  0.3.1, but the fix had never been applied).
+- The npm launcher could be killed by a signal that arrived just after it started the program, leaving the program running
+  with nothing to stop it (found by a flaky test on a busy machine). Signal handlers are now installed before the program is started.
+- A candidate that is, or contains, the temp directory is refused. With `TMPDIR=~/.cache/tmp` the `xdg-cache`
+  rule would otherwise have deleted the temp directory itself.
+
+### Changed
+- `clean --apply` is about 12 times faster on many candidates (300 entries: 34.6 s before, 2.8 s now). The list of
+  what programs have open is re-read at most once a second instead of for every candidate. The trade-off is documented.
+- Scans judge the candidates of one rule in parallel (`--category pycache`: about 4.3 s before, 1.8 s now, on a
+  busy machine).
+- CI: staged pipeline (setup, lint, tests on stable and on the minimum Rust 1.88, coverage with a 90% floor, builds of every
+  package format), a weekly dependency audit, a link check for the documentation, and namespace tests that must run on CI.
+  The release-tag check is one reusable workflow instead of four copies.
+
+### Documentation
+- Every public item, module, script, test and workflow is documented, and `missing_docs` is enforced.
+- New `ARCHITECTURE.md`, `CONTRIBUTING.md` and `SECURITY.md`; the README is restructured with a quick start, command
+  reference and FAQ.
+
 ## 0.6.1 - 2026-10-23
 
 Release pipeline hardening from a review of the packaging; no change to what `scan` and `clean` do.

@@ -8,7 +8,8 @@
 #   crates  publishes the crate to crates.io (skips a version that is already there)
 # The PyPI and npm packages are published by pypi.yml and npm.yml, which start from the same
 # release. Homebrew follows from its own repository (dpologdvinity/homebrew-tap).
-# See RELEASING.md for how to cut a release and docs/agents/STEPS-FOR-OWNER.md for the secrets.
+# See RELEASING.md for how to cut a release. Secrets used: CARGO_REGISTRY_TOKEN (crates job),
+# APT_GPG_PRIVATE_KEY (apt job).
 name: Release binaries
 
 on:
