@@ -2,6 +2,14 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.5 - 2026-10-24
+
+Packaging only; the program is unchanged.
+
+### Changed
+- npm publishing uses trusted publishing only: the `NPM_TOKEN` fallback step is removed, because the packages now refuse token
+  publishing.
+
 ## 0.6.4 - 2026-10-24
 
 Packaging only; the program is unchanged.
