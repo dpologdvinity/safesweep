@@ -125,14 +125,54 @@ fn rejects_unsafe_tmpdir() {
     }
 }
 
+/// What to do when a test needs `unshare -rm` (unprivileged user and mount namespaces):
+/// `Ok(true)` run it, `Ok(false)` skip it, `Err(message)` fail the test.
+///
+/// A skip is silent in test output, and these tests guard the most important safety checks
+/// (files used inside containers, mount points). So on CI, where a skip would hide that a
+/// regression test never ran, being unable to use namespaces is a failure, not a skip.
+fn namespace_policy(available: bool, on_ci: bool) -> Result<bool, String> {
+    match (available, on_ci) {
+        (true, _) => Ok(true),
+        (false, false) => Ok(false),
+        (false, true) => Err(
+            "`unshare -rm` is unavailable on CI, so the mount-namespace safety \
+                              tests cannot run; enable unprivileged user namespaces on the runner"
+                .into(),
+        ),
+    }
+}
+
+/// Whether this test can run `unshare -rm`; panics on CI if it cannot. See [`namespace_policy`].
+fn namespaces_usable() -> bool {
+    let works = std::process::Command::new("unshare")
+        .args(["-rm", "true"])
+        .status()
+        .is_ok_and(|s| s.success());
+    match namespace_policy(works, std::env::var_os("CI").is_some()) {
+        Ok(run) => {
+            if !run {
+                eprintln!("skipping: unshare -rm unavailable");
+            }
+            run
+        }
+        Err(msg) => panic!("{msg}"),
+    }
+}
+
+#[test]
+fn namespace_policy_skips_locally_and_fails_on_ci() {
+    assert_eq!(namespace_policy(true, false), Ok(true));
+    assert_eq!(namespace_policy(true, true), Ok(true));
+    assert_eq!(namespace_policy(false, false), Ok(false));
+    let err = namespace_policy(false, true).unwrap_err();
+    assert!(err.contains("unshare") && err.contains("CI"), "{err}");
+}
+
 /// Runs the binary inside a user+mount namespace with `setup` mounts applied first.
 /// Returns None if this system does not allow unprivileged namespaces.
 fn scan_in_namespace(fx: &Fx, setup: &str) -> Option<BTreeMap<String, String>> {
-    let ok = std::process::Command::new("unshare")
-        .args(["-rm", "true"])
-        .status();
-    if !ok.is_ok_and(|s| s.success()) {
-        eprintln!("skipping: unshare -rm unavailable");
+    if !namespaces_usable() {
         return None;
     }
     let bin = assert_cmd::cargo::cargo_bin("safesweep");
@@ -351,11 +391,7 @@ fn in_use_seen_through_other_mount_namespace() {
     let live = fx.home.path().join("proj/__pycache__");
     let mnt = fx.home.path().join("mnt");
     fs::create_dir(&mnt).unwrap();
-    let ok = std::process::Command::new("unshare")
-        .args(["-rm", "true"])
-        .status();
-    if !ok.is_ok_and(|s| s.success()) {
-        eprintln!("skipping: unshare -rm unavailable");
+    if !namespaces_usable() {
         return;
     }
     let mut child = std::process::Command::new("unshare")
