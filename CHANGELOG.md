@@ -2,6 +2,19 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.1 - 2026-10-23
+
+Release pipeline hardening from a review of the packaging; no change to what `scan` and `clean` do.
+
+### Fixed
+- npm launcher forwards SIGTERM/SIGINT/SIGHUP to the native process (before, `timeout 60 safesweep clean --apply` kept deleting after the timeout).
+- Nothing publishes unless the tag is `vX.Y.Z[-pre]` and matches `Cargo.toml` (before, only the crates.io job checked).
+- `--category` with `completions` or `man` is an error, like with `why`.
+
+### Changed
+- apt repo is only rebuilt for the latest stable release, one run at a time; prereleases go to npm's `next` tag and skip apt.
+- `.sha256` files come from the tarball already on the release; npm packages are built from checksum-verified binaries; checkouts keep no credentials; `flake.lock` is committed; packaging tool versions are pinned.
+
 ## 0.6.0 - 2026-10-23
 
 ### Added

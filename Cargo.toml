@@ -1,6 +1,6 @@
 [package]
 name = "safesweep"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 # let-chains in `if let ... && let ...` need 1.88
 rust-version = "1.88"
