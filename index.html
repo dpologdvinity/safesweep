@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><title>safesweep apt repository</title>
+<h1>safesweep apt repository</h1>
+<pre>
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://dpologdvinity.github.io/safesweep/key.asc | sudo tee /etc/apt/keyrings/safesweep.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/safesweep.asc] https://dpologdvinity.github.io/safesweep stable main" | sudo tee /etc/apt/sources.list.d/safesweep.list
+sudo apt update &amp;&amp; sudo apt install safesweep
+</pre>
+<p>Key fingerprint: <code>A5DA1DFEA1ADAEAD756B0A8F88D35216B52C4C69</code></p>
+<p><a href="https://github.com/dpologdvinity/safesweep">github.com/dpologdvinity/safesweep</a></p>

@@ -1,0 +1,20 @@
+Package: safesweep
+Architecture: arm64
+Version: 0.6.6-1
+Priority: optional
+Section: utils
+Maintainer: Kaitlyn Bassford <kaitlynbassford@gmail.com>
+Installed-Size: 1795
+Depends:
+Filename: pool/main/safesweep_0.6.6-1_arm64.deb
+Size: 612020
+MD5sum: 5c9d2f743d8630c5c11a0a532fe1be84
+SHA1: 95185e25717ddb6796371f3509024e0bfe8fe72e
+SHA256: 626fa978d06197b6ed30c451f27a070419f88a0288f4a57338851ccdca210f4d
+SHA512: 9e93a9511965ea00d9e982fc7646981f9bbb28d602336e3979b2a2df295f4665422755970cb3dc2b5a5a67c976a1f0fbafda866c58810eb9bf76395bdb6d0f8a
+Homepage: https://github.com/dpologdvinity/safesweep
+Description: Clean caches and temp files that are provably safe to delete
+ Deletes cache and temp files only when it can prove they are safe: nothing
+ open, nothing recent, nothing shared. Also shows what is using the CPU
+ (safesweep why) and has an interactive explorer (safesweep tui).
+

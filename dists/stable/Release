@@ -1,0 +1,27 @@
+Architectures: amd64 arm64
+Codename: stable
+Components: main
+Date: Sat, 24 Oct 2026 11:00:52 +0000
+Label: safesweep
+Origin: safesweep
+Suite: stable
+MD5Sum:
+ 50ceffacc1b7111d103329e31c7d0bfe              878 main/binary-amd64/Packages
+ 353048aa801314d4fd64de3f19ece4d4              598 main/binary-amd64/Packages.gz
+ 4bf6180b95f918f3b86b786dac80a1cd              878 main/binary-arm64/Packages
+ 21dbac3745948618d6336a5663e1479d              599 main/binary-arm64/Packages.gz
+SHA1:
+ 93871fb703a70a67c140f91e1e16ce7efd48ae86              878 main/binary-amd64/Packages
+ 57ca11fba49ecfcc64539b5c0fe45a0ba639e8d9              598 main/binary-amd64/Packages.gz
+ 239900a4dabc923e608e12b73680096c05a4a3ab              878 main/binary-arm64/Packages
+ eb9b93e994630ee4e4e645e27d89f10c3faef54a              599 main/binary-arm64/Packages.gz
+SHA256:
+ 875199ea1e552d7b4c117d7d3d5238c412e02a2ac5f3755cf9479bc1bcc05fe6              878 main/binary-amd64/Packages
+ 5372de13c1cd00ef348f7b2b984d0c9a7a79e20d746459c4e02f81510dcbb769              598 main/binary-amd64/Packages.gz
+ 6c851aed6cbf716ec95b51e10f44fb666fd8c9135f270e0360a18a224f4bb01c              878 main/binary-arm64/Packages
+ 426eedbb8a6bbf77c4c017f66b2b4b52427acdaaf329eb3d60842fca182d4e8b              599 main/binary-arm64/Packages.gz
+SHA512:
+ 0eacba54beb9e1b9462587e734baa2f8667b2233625b68bb037b12d107023c73d407dd6acfcef7b4f8d7692de9f4f2c4eaf320c89b35dbd3873fe85b16e5e035              878 main/binary-amd64/Packages
+ fa5968b36da8ad923eb54bfb119fd7bcee4e92983057cb0a9aad8c9f882a30f68bb0236958ea20901b1746dece9a1e4def3503eca62f77113ec08cf3c64e8d4c              598 main/binary-amd64/Packages.gz
+ 7aa51dab96c3ee548d3c45e14b4f0ccac972fa545845f1a2f825a93005f8586d64a8c47b3ba5c62f0caf0f6cf1c0b2be45e92eb664494f5380beff34b86a08ee              878 main/binary-arm64/Packages
+ 36f6790b73e55cf82f16d84e4cb7c20601f808410e8d57b315a4ee72cfedf6cdfd516a2d504ecbb6456ffd91a95e1fa71983fea85fcaf8c82dee1f1eedf7e4a6              599 main/binary-arm64/Packages.gz
