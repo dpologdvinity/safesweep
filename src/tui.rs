@@ -419,7 +419,8 @@ fn scan(
 /// Runs the interactive explorer on the real terminal until the user quits.
 ///
 /// Scans `rules` first (cancellable), then loops: draw, wait for a key, apply it, and rescan
-/// after a delete. The terminal is always restored, whether the loop ends normally or with an
+/// after a delete. The clock in the context is refreshed before every scan and key press: a
+/// session can stay open for hours, and ages and the log file's name must use the real time. The terminal is always restored, whether the loop ends normally or with an
 /// error.
 ///
 /// Returns `Ok(true)` if any delete failed or could not be logged, so the caller can exit with
