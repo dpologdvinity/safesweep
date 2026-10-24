@@ -18,7 +18,7 @@ Publishing the release does the rest:
 | `release.yml` | static binaries, `.deb`, `.rpm` on the release; crates.io; the apt repo on GitHub Pages |
 | `pypi.yml` | wheels and sdist to PyPI |
 | `npm.yml` | npm packages, after `release.yml` succeeds |
-| `dpologdvinity/homebrew-tap` | formula, picked up within 6 hours (or run its `update-safesweep` workflow) |
+| `dpologdvinity/homebrew-tap` | formula; `release.yml` asks the tap to update right away (it also polls every 6 hours) |
 
 Before anything publishes, `verify-tag.yml` (called first by `release.yml`, `pypi.yml` and `npm.yml`)
 refuses a tag that is not `vMAJOR.MINOR.PATCH[-pre]` or does not match `Cargo.toml`. A tag with a `-pre` suffix is

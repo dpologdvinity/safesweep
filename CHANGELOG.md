@@ -2,6 +2,20 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.3 - 2026-10-24
+
+### Fixed
+- The interactive explorer used the time it was started at for ages and for the log file's name, however long the session
+  stayed open. The clock is now refreshed before every scan and key press.
+- The `artifacts` search no longer walks into a hidden directory that is not a real build directory (for example a
+  hand-made `.venv`): it is skipped like any other hidden directory.
+
+### Added
+- `artifacts` recognises `node_modules` created by `bun install --linker isolated` (marked by `node_modules/.bun`).
+  Bun's default layout leaves no marker, so those folders are still not recognised. (An earlier change used a `.bun-tag`
+  marker; real bun does not create it, so it was replaced after testing against bun 1.4.2.)
+- The release workflow asks the Homebrew tap to update immediately.
+
 ## 0.6.2 - 2026-10-24
 
 Fixes from a second full review, much faster cleanups, and a documentation overhaul. Upgrade recommended.

@@ -142,7 +142,7 @@ const ARTIFACTS: [(&str, &[&str], &[&str]); 3] = [
             ".yarn-integrity",
             ".yarn-state.yml",
             ".modules.yaml",
-            ".bun-tag",
+            ".bun", // bun --linker isolated; bun's default layout has no marker
         ],
     ),
     (
@@ -653,12 +653,14 @@ mod tests {
     }
 
     #[test]
-    fn idle_artifacts_recognises_bun_tag() {
+    fn idle_artifacts_recognises_bun_isolated_store() {
+        // `bun install --linker isolated` creates node_modules/.bun (its package store); checked
+        // against bun 1.4.2. Bun's default layout writes no marker at all, so it is not recognised.
         let t = tempfile::tempdir().unwrap();
         let p = t.path().join("bun_app");
         fs::create_dir_all(p.join("node_modules")).unwrap();
         fs::write(p.join("package.json"), "x").unwrap();
-        fs::write(p.join("node_modules/.bun-tag"), "").unwrap();
+        fs::create_dir(p.join("node_modules/.bun")).unwrap();
         fs::create_dir_all(p.join(".git/logs")).unwrap();
         let old = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(86400 * 60));
         fs::write(p.join(".git/index"), "x").unwrap();
