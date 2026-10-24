@@ -2,6 +2,14 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.6 - 2026-10-24
+
+### Added
+- `curl -fsSL https://github.com/dpologdvinity/safesweep/releases/latest/download/install.sh | sh`: an installer that
+  needs no root and no package manager. It checks the release's SHA-256 checksum, installs the program, man page and
+  completions, and verifies the installed version. It is attached to every release and tested against fake releases,
+  and on Debian and Alpine against real ones.
+
 ## 0.6.5 - 2026-10-24
 
 Packaging only; the program is unchanged.

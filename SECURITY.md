@@ -48,7 +48,8 @@ anything is published.
 
 ## Verifying a download
 
-Release tarballs have a `.sha256` file next to them, the apt repository is signed (fingerprint
+Release tarballs have a `.sha256` file next to them (the `curl` installer, `install.sh`, checks it before it installs
+anything and never uses `sudo`), the apt repository is signed (fingerprint
 `A5DA1DFEA1ADAEAD756B0A8F88D35216B52C4C69`, public key at
 <https://dpologdvinity.github.io/safesweep/key.asc>), and the npm packages are published with provenance
 (npmjs.com shows the GitHub Actions run that built each one).

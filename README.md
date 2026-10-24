@@ -53,6 +53,7 @@ confirmation prompt in `safesweep tui`).
 Pick whichever fits your system:
 
 ```sh
+curl -fsSL https://github.com/dpologdvinity/safesweep/releases/latest/download/install.sh | sh   # any Linux or WSL
 cargo install safesweep                     # build from source (Rust 1.88 or newer)
 cargo binstall safesweep                    # prebuilt binary, via cargo-binstall
 brew install dpologdvinity/tap/safesweep    # Homebrew on Linux
@@ -60,6 +61,21 @@ pipx install safesweep                      # or: uv tool install safesweep
 npm install -g safesweep                    # or: pnpm add -g / yarn global add / bun add -g
 nix run github:dpologdvinity/safesweep      # Nix flake
 ```
+
+**The `curl` installer** needs no root and no package manager. It downloads the release binary for your CPU
+(x86_64 or aarch64), checks it against the published SHA-256 checksum, installs it into `~/.local/bin` (plus the man
+page and shell completions under `~/.local/share`), and checks that the installed program reports the right
+version. Read it first if you like: it is one short, commented file,
+[`install.sh`](install.sh). It works with `curl` or `wget`.
+
+```sh
+# a specific version, into another directory:
+curl -fsSL https://github.com/dpologdvinity/safesweep/releases/latest/download/install.sh | sh -s -- --version 0.6.5 --bin-dir /usr/local/bin
+```
+
+To uninstall, delete `safesweep` from the directory it installed into (the installer prints every path), along
+with `~/.local/share/man/man1/safesweep.1` and the completion files it lists. If `~/.local/bin` is not in your
+`PATH`, the installer tells you what to add.
 
 **Debian, Ubuntu and WSL (apt repository, gets updates with `apt upgrade`):**
 

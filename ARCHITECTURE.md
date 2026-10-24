@@ -353,6 +353,7 @@ channel then reuses *those* binaries:
 | Homebrew | formula in `dpologdvinity/homebrew-tap`, regenerated from the release; `release.yml` triggers it | tap repo |
 | Nix | `flake.nix`, built in CI | `ci.yml` |
 | cargo-binstall | `[package.metadata.binstall]` points at the release tarballs | none |
+| `curl \| sh` | `install.sh` downloads and checksum-verifies the release tarball; attached to every release | `release.yml` |
 
 Safeguards:
 

@@ -6,6 +6,7 @@
 #           release together with checksums. Existing release assets are never replaced.
 #   apt     rebuilds the signed apt repository on GitHub Pages (latest stable release only)
 #   crates  publishes the crate to crates.io (skips a version that is already there)
+#   installer attaches install.sh (the curl installer) to the release
 #   homebrew  asks the Homebrew tap to update its formula now instead of at its next poll
 # The PyPI and npm packages are published by pypi.yml and npm.yml, which start from the same
 # release. The Homebrew formula itself lives in dpologdvinity/homebrew-tap.
@@ -191,3 +192,28 @@ jobs:
             exit 0
           fi
           gh workflow run update-safesweep.yml --repo dpologdvinity/homebrew-tap
+
+  # The curl installer is attached to every release, so
+  #   https://github.com/dpologdvinity/safesweep/releases/latest/download/install.sh
+  # is a stable address, and each copy is exactly the one that was reviewed and tested for that
+  # release (not whatever master holds later). A published asset is never replaced.
+  installer:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: Attach install.sh
+        run: |
+          if gh release view "$TAG" --json assets -q '.assets[].name' | grep -qxF install.sh; then
+            echo "install.sh is already on the release; keeping it"
+          else
+            gh release upload "$TAG" install.sh
+          fi
