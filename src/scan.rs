@@ -42,7 +42,12 @@ pub enum Matcher {
     /// Hidden directories (names starting with `.`) are not entered.
     NamedDirs(&'static str),
     /// Build directories (`node_modules`, `target`, `.venv`) of git projects that have had no
-    /// git activity for [`IDLE_DAYS`] days. See [`ARTIFACTS`] for what counts as one.
+    /// git activity for 30 days.
+    ///
+    /// A directory only counts if a project marker file sits next to it (`package.json`,
+    /// `Cargo.toml`, ...) *and* it contains a file only the tool itself creates (`pyvenv.cfg`,
+    /// `CACHEDIR.TAG`, ...), so a hand-made folder with the same name is never taken for build
+    /// output. Projects without a readable `.git` directory are never listed.
     IdleArtifacts,
 }
 
@@ -55,7 +60,9 @@ pub struct Entry {
     /// nothing (uv hardlinks its cache into virtual environments).
     pub bytes: u64,
     /// Time of the most recent change anywhere in the tree: the newer of modification time and
-    /// inode change time, over every entry. See [`changed`] for why both are used.
+    /// inode change time, over every entry. Both are used because tools like `tar` and
+    /// `rsync -a` set the modification time back to the original, so it alone can make a tree
+    /// unpacked a minute ago look years old; the inode change time cannot be set by any program.
     pub newest: SystemTime,
     /// `Some(uid)` only if every entry in the tree belongs to that one user; `None` if owners
     /// are mixed.

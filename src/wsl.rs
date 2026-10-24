@@ -1,10 +1,29 @@
+//! Windows Subsystem for Linux (WSL) support: detecting it, and explaining how to give disk space
+//! back to Windows.
+//!
+//! On WSL 2 the Linux filesystem lives in a single virtual disk file (`ext4.vhdx`) on the Windows
+//! side. Deleting files inside Linux frees space *inside* that file but does not make the file
+//! smaller, so Windows' free space does not change until the disk is compacted from Windows.
+//! This module only produces instructions. It never runs anything, and it never touches the
+//! Windows side.
+
+/// True if the text of `/proc/version` shows a WSL kernel (WSL kernels are built by Microsoft and
+/// say so, for example `6.6.36.3-microsoft-standard-WSL2`).
+///
 /// `proc_version` is the contents of `/proc/version`.
 pub fn is_wsl(proc_version: &str) -> bool {
     proc_version.to_lowercase().contains("microsoft")
 }
 
-/// Steps to return freed space to Windows. Printed only; never run.
-/// Deliberately not `--set-sparse`: WSL disabled it over data-corruption reports.
+/// The instructions for compacting the virtual disk of the WSL distribution `distro`, as text
+/// to show the user. They are printed, never run: compacting needs administrator rights on
+/// Windows and a full WSL shutdown.
+///
+/// The steps are: back up the distribution, shut WSL down, find the `ext4.vhdx` file through the
+/// registry, then compact it with `Optimize-VHD` (or `diskpart` where Hyper-V is not available).
+///
+/// This deliberately does not suggest `wsl --manage --set-sparse`: WSL disabled sparse disks
+/// after data-corruption reports, and a sparse disk cannot be compacted with `Optimize-VHD`.
 pub fn hint(distro: &str) -> String {
     format!(
         r#"WSL: freed space stays inside ext4.vhdx until you compact it from Windows.
@@ -20,6 +39,7 @@ In PowerShell (as admin):
     )
 }
 
+/// Unit tests for WSL detection and the shape of the instructions.
 #[cfg(test)]
 mod tests {
     use super::*;

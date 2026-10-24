@@ -1,3 +1,23 @@
+//! The interactive explorer behind `safesweep tui`.
+//!
+//! The screen lists the same candidates as `scan`, largest first. The user moves with the arrow
+//! keys, selects the safe rows, and deletes the selection after confirming.
+//!
+//! # Design
+//!
+//! - **State and screen are separate.** [`App`] holds everything that can change (the rows, the
+//!   cursor, the selection, the prompt) and [`App::handle_key`] is a plain function from a key
+//!   to a new state. [`draw`] only paints the current state. Neither needs a real terminal, so
+//!   both are unit-tested with a fake one. Only [`run`] talks to the real terminal.
+//! - **Deleting goes through [`clean::clean`]**, exactly like `safesweep clean --apply`: every
+//!   chosen row is re-measured and re-checked right before removal and logged to the manifest.
+//!   Nothing in this module removes a file itself, so the interface cannot delete anything the
+//!   command line would refuse to.
+//! - **Rows that can never be deleted are not selectable.** Only rows whose status is `ok` can
+//!   be selected; rows owned by other users are hidden altogether.
+//! - **Scans can be cancelled.** Scanning runs on a background thread while the terminal is in
+//!   raw mode, where Ctrl-C does not interrupt the program, so `q` or Esc cancels explicitly.
+
 use crate::render::{escape_path, human};
 use crate::rules::Rule;
 use crate::{Ctx, Row, clean, collect};
@@ -10,18 +30,29 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 
+/// What the main loop should do after a key press.
 #[derive(Debug, PartialEq)]
 pub enum Action {
+    /// Keep running and redraw.
     Continue,
+    /// Leave the program.
     Quit,
 }
 
+/// Everything the explorer remembers between key presses. See the module docs.
 pub struct App {
+    /// The candidates being shown, largest first. Rows owned by other users are not in here.
     pub rows: Vec<Row>,
+    /// The cursor: which row is highlighted (and the scroll position). `None` when `rows` is
+    /// empty.
     pub state: ListState,
     /// Indexes into `rows`; only rows whose status is `ok` can be in here.
     pub selected: BTreeSet<usize>,
+    /// True while the "Delete N items? y to confirm" prompt is showing. The next key either
+    /// confirms (`y`) or cancels (anything else).
     pub confirming: bool,
+    /// A one-line note for the status line: the result of the last delete, or why a key did
+    /// nothing ("nothing selected").
     pub message: String,
     /// Set when a delete failed or could not start; makes `run` report failure.
     pub failed: bool,
@@ -32,6 +63,8 @@ pub struct App {
 }
 
 impl App {
+    /// Starts with `rows` (as returned by [`crate::collect`]), nothing selected, and the cursor on
+    /// the first row. Rows owned by other users are removed from the list and only counted.
     pub fn new(rows: Vec<Row>) -> App {
         let (rows, hidden) = shown(rows);
         let mut state = ListState::default();
@@ -48,10 +81,12 @@ impl App {
         }
     }
 
+    /// Total size of the selected rows, in bytes.
     pub fn selected_bytes(&self) -> u64 {
         self.selected.iter().map(|&i| self.rows[i].bytes).sum()
     }
 
+    /// Moves the cursor one row down or up and stops at the ends. Does nothing for an empty list.
     fn step(&mut self, down: bool) {
         let Some(i) = self.state.selected() else {
             return;
@@ -64,6 +99,8 @@ impl App {
         }));
     }
 
+    /// Selects or unselects the row under the cursor. A row that is not `ok` cannot be selected;
+    /// the reason is shown in the status line instead.
     fn toggle(&mut self) {
         let Some(i) = self.state.selected() else {
             return;
@@ -76,7 +113,12 @@ impl App {
     }
 
     /// Removes the selected rows through the same guarded path as `safesweep clean --apply`,
-    /// then rescans so the list shows what is really left.
+    /// reports the result in `message`, and asks the main loop for a rescan so the list shows
+    /// what is really left.
+    ///
+    /// The message counts what was removed, what failed and what the re-check skipped, and
+    /// quotes the first row that did not go, so a failure is never silent. A failed or unlogged
+    /// delete sets `failed`, which makes the program exit with code 1.
     fn delete(&mut self, ctx: &Ctx, manifest_dir: &Path) {
         let chosen: Vec<Row> = self
             .selected
@@ -124,7 +166,8 @@ impl App {
         self.needs_rescan = true;
     }
 
-    /// Replaces the list after a rescan, keeping the cursor near where it was.
+    /// Replaces the list with the result of a rescan, clears the selection, and keeps the cursor
+    /// near where it was. Rows owned by other users are hidden, as in [`App::new`].
     pub fn set_rows(&mut self, rows: Vec<Row>) {
         (self.rows, self.hidden) = shown(rows);
         self.selected.clear();
@@ -137,8 +180,19 @@ impl App {
         self.state.select((!self.rows.is_empty()).then_some(keep));
     }
 
-    /// Applies one key press. Deleting re-runs the full guard check through `clean::clean`
-    /// and then asks `run` for a rescan.
+    /// Applies one key press and says whether to keep running.
+    ///
+    /// | Key | Effect |
+    /// |---|---|
+    /// | `j`, Down / `k`, Up | move the cursor |
+    /// | Space | select or unselect the current row |
+    /// | `a` / `n` | select every safe row / clear the selection |
+    /// | `d`, Enter | ask for confirmation (only if something is selected) |
+    /// | `y` (at the prompt) | delete; any other key cancels |
+    /// | `q`, Esc | quit |
+    ///
+    /// Deleting re-runs the full guard check through [`clean::clean`] and then asks [`run`] for a
+    /// rescan. `manifest_dir` is where removals are logged.
     pub fn handle_key(&mut self, code: KeyCode, ctx: &Ctx, manifest_dir: &Path) -> Action {
         if self.confirming {
             self.confirming = false;
@@ -171,8 +225,9 @@ impl App {
     }
 }
 
-/// Rows owned by other users can never be deleted; listing them only buries the real candidates
-/// (and lets another user fill the list with junk names in `/tmp`). Returns the rest and the count.
+/// Splits off the rows owned by other users: they can never be deleted, and listing them only
+/// buries the real candidates (and lets another user fill the list with junk names in `/tmp`).
+/// Returns the rows to show and how many were left out.
 fn shown(rows: Vec<Row>) -> (Vec<Row>, usize) {
     let total = rows.len();
     let rows: Vec<Row> = rows
@@ -183,8 +238,11 @@ fn shown(rows: Vec<Row>) -> (Vec<Row>, usize) {
     (rows, hidden)
 }
 
+/// Width of the size bar in a row, in characters.
 const BAR: usize = 12;
 
+/// A bar of [`BAR`] characters showing `bytes` relative to the largest row (`max`):
+/// `████████░░░░`. An empty list (`max` of 0) gives an empty bar.
 fn bar(bytes: u64, max: u64) -> String {
     let filled = if max == 0 {
         0
@@ -194,8 +252,12 @@ fn bar(bytes: u64, max: u64) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled))
 }
 
-/// The key an event stands for, if any: only plain presses count, so Ctrl-D or a held key
-/// cannot open or confirm the delete prompt, and Ctrl-C quits.
+/// The key a terminal event stands for, if any.
+///
+/// Only plain key *presses* count: a release or repeat is ignored, and a key held with Ctrl or
+/// Alt is ignored, so Ctrl-D cannot open the delete prompt and Ctrl-Y cannot confirm it. Shift is
+/// allowed (capital letters). Ctrl-C is translated to Esc, which quits, because in raw mode the
+/// terminal no longer turns it into an interrupt.
 pub fn translate(key: ratatui::crossterm::event::KeyEvent) -> Option<KeyCode> {
     use ratatui::crossterm::event::KeyModifiers;
     if key.kind != KeyEventKind::Press {
@@ -209,8 +271,9 @@ pub fn translate(key: ratatui::crossterm::event::KeyEvent) -> Option<KeyCode> {
         .then_some(key.code)
 }
 
-/// `s` shortened from the left to `width` chars, so the end of a path (what tells similar
-/// rows apart) stays visible: `…/c/cache/file`.
+/// Shortens `s` from the left to at most `width` characters, marking the cut with `…`, so the
+/// end of a path (the part that tells similar rows apart) stays visible: `…/cache/file`.
+/// A string that already fits is returned unchanged; a `width` of 0 gives an empty string.
 pub fn fit_left(s: &str, width: usize) -> String {
     let n = s.chars().count();
     if n <= width {
@@ -223,7 +286,7 @@ pub fn fit_left(s: &str, width: usize) -> String {
     format!("…{tail}")
 }
 
-/// Shown while the first scan runs, before there are rows to draw.
+/// Paints the "Scanning…" screen shown while a scan runs, before there are rows to draw.
 pub fn draw_scanning(f: &mut Frame) {
     f.render_widget(
         ratatui::text::Span::raw("Scanning…  (q to cancel)"),
@@ -231,6 +294,11 @@ pub fn draw_scanning(f: &mut Frame) {
     );
 }
 
+/// Paints the whole screen from `app`: the list of rows (mark, size, size bar, rule, path, and
+/// the skip reason for rows that are not safe), a status line, and a line of key help.
+///
+/// Paths are escaped and cut on the left to fit the width; the skip reason is always kept. A
+/// highlighted cursor row is drawn reversed, skipped rows in grey.
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [list_area, status_area, help_area] = Layout::vertical([
         Constraint::Fill(1),
@@ -315,8 +383,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
 }
 
-/// Collects rows on a background thread while showing the scanning screen. Returns `None` if
-/// the user cancels: raw mode swallows Ctrl-C, and a pycache or artifacts scan can take minutes.
+/// Collects rows on a background thread while showing the scanning screen.
+///
+/// Returns `Ok(None)` if the user cancels with `q` or Esc: raw mode swallows Ctrl-C, and a
+/// `pycache` or `artifacts` scan can take minutes. The background thread is left to finish on
+/// its own; its result is discarded.
+///
+/// # Errors
+///
+/// Returns an error if the terminal cannot be drawn to or read from.
 fn scan(
     terminal: &mut ratatui::DefaultTerminal,
     rules: &[&'static Rule],
@@ -341,7 +416,18 @@ fn scan(
     }
 }
 
-/// Runs the interactive explorer until the user quits. Returns whether any delete failed.
+/// Runs the interactive explorer on the real terminal until the user quits.
+///
+/// Scans `rules` first (cancellable), then loops: draw, wait for a key, apply it, and rescan
+/// after a delete. The terminal is always restored, whether the loop ends normally or with an
+/// error.
+///
+/// Returns `Ok(true)` if any delete failed or could not be logged, so the caller can exit with
+/// code 1.
+///
+/// # Errors
+///
+/// Returns an error if the terminal cannot be set up, drawn to or read from.
 pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Result<bool> {
     let mut terminal = ratatui::try_init()?;
     let result = (|| -> io::Result<bool> {
@@ -369,6 +455,9 @@ pub fn run(rules: &[&'static Rule], ctx: &Ctx, manifest_dir: &Path) -> io::Resul
     result
 }
 
+/// Unit tests. The state machine and the drawing are tested without a terminal (keys are fed
+/// to [`App::handle_key`], the screen is drawn into an in-memory buffer); deletions run against
+/// a temporary directory with a moved clock.
 #[cfg(test)]
 mod tests {
     use super::*;
