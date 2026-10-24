@@ -1,9 +1,19 @@
 # safesweep
 
 [![CI](https://github.com/dpologdvinity/safesweep/actions/workflows/ci.yml/badge.svg)](https://github.com/dpologdvinity/safesweep/actions/workflows/ci.yml)
+[![docs.rs](https://img.shields.io/docsrs/safesweep)](https://docs.rs/safesweep)
+[![dependency status](https://deps.rs/repo/github/dpologdvinity/safesweep/status.svg)](https://deps.rs/repo/github/dpologdvinity/safesweep)
+[![last commit](https://img.shields.io/github/last-commit/dpologdvinity/safesweep)](https://github.com/dpologdvinity/safesweep/commits/master)
+
+[![release](https://img.shields.io/github/v/release/dpologdvinity/safesweep)](https://github.com/dpologdvinity/safesweep/releases)
 [![crates.io](https://img.shields.io/crates/v/safesweep)](https://crates.io/crates/safesweep)
 [![PyPI](https://img.shields.io/pypi/v/safesweep)](https://pypi.org/project/safesweep/)
 [![npm](https://img.shields.io/npm/v/safesweep)](https://www.npmjs.com/package/safesweep)
+[![Homebrew tap](https://img.shields.io/badge/homebrew-dpologdvinity%2Ftap-orange)](#install)
+
+[![downloads](https://img.shields.io/crates/d/safesweep)](https://crates.io/crates/safesweep)
+[![MSRV](https://img.shields.io/crates/msrv/safesweep)](Cargo.toml)
+[![platform](https://img.shields.io/badge/platform-linux%20%7C%20WSL-blue)](#wsl)
 [![license](https://img.shields.io/crates/l/safesweep)](#license)
 
 **Clean caches and temp files that are provably safe to delete, and see what is eating your CPU.**
