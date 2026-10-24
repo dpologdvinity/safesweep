@@ -66,7 +66,7 @@ nix run github:dpologdvinity/safesweep      # Nix flake
 (x86_64 or aarch64), checks it against the published SHA-256 checksum, installs it into `~/.local/bin` (plus the man
 page and shell completions under `~/.local/share`), and checks that the installed program reports the right
 version. Read it first if you like: it is one short, commented file,
-[`install.sh`](https://github.com/dpologdvinity/safesweep/blob/master/install.sh). It works with `curl` or `wget`.
+[`install.sh`](install.sh). It works with `curl` or `wget`.
 
 ```sh
 # a specific version, into another directory:
