@@ -90,6 +90,49 @@ pub fn in_use(proc_root: &Path) -> io::Result<InUse> {
     Ok(out)
 }
 
+/// Keeps one reading of the process tree and reuses it for a short time.
+///
+/// `clean` re-checks every candidate right before removing it, and each check needs to know what
+/// processes have open. Reading `/proc` takes tens of milliseconds, so doing it per candidate
+/// made a large cleanup crawl. Reusing a reading for up to `max_age` keeps that fast.
+///
+/// The trade-off is deliberate and small: a file opened inside a candidate during the last
+/// `max_age` is not yet visible. The check-then-remove gap can never be closed completely, and
+/// a process that opened a file keeps its handle valid even after the file is unlinked.
+pub struct SnapshotCache {
+    proc_root: PathBuf,
+    max_age: Duration,
+    taken: Option<std::time::Instant>,
+    value: Option<InUse>,
+    /// How many times `/proc` was actually read. Exposed so tests can verify the reuse.
+    pub reads: usize,
+}
+
+impl SnapshotCache {
+    /// A cache that reads `proc_root` (normally `/proc`) and reuses a reading for `max_age`.
+    pub fn new(proc_root: PathBuf, max_age: Duration) -> SnapshotCache {
+        SnapshotCache {
+            proc_root,
+            max_age,
+            taken: None,
+            value: None,
+            reads: 0,
+        }
+    }
+
+    /// The current reading, or `None` if `/proc` cannot be read (callers must then treat every
+    /// candidate as unverifiable). A failed read is retried on the next call after `max_age`.
+    pub fn get(&mut self) -> Option<&InUse> {
+        let stale = self.taken.is_none_or(|t| t.elapsed() >= self.max_age);
+        if stale {
+            self.value = in_use(&self.proc_root).ok();
+            self.taken = Some(std::time::Instant::now());
+            self.reads += 1;
+        }
+        self.value.as_ref()
+    }
+}
+
 /// The `(device, inode)` pair on one line of `/proc/<pid>/maps`, or `None` for anonymous
 /// mappings (inode 0, such as the heap) and malformed lines.
 ///
@@ -130,12 +173,14 @@ fn map_path(line: &str) -> Option<PathBuf> {
 /// 1. The candidate is not a symbolic link.
 /// 2. The candidate lies inside its rule's root directory after resolving symlinks in the
 ///    path. As root, the root directory must also not itself be reached through a symlink.
-/// 3. As root, the candidate is not in the temporary directory (see below).
-/// 4. As an ordinary user, every file in the tree belongs to that user.
-/// 5. Nothing in the tree changed within `min_age_days`.
-/// 6. The tree holds no socket or named pipe.
-/// 7. The open-file information is available (`in_use` is `Some`).
-/// 8. No running process uses the tree, or `scope` (below), by path or by inode.
+/// 3. The candidate is not the temporary directory or an ancestor of it (deleting that would
+///    break every tool that needs scratch space).
+/// 4. As root, the candidate is not in the temporary directory (see below).
+/// 5. As an ordinary user, every file in the tree belongs to that user.
+/// 6. Nothing in the tree changed within `min_age_days`.
+/// 7. The tree holds no socket or named pipe.
+/// 8. The open-file information is available (`in_use` is `Some`).
+/// 9. No running process uses the tree, or `scope` (below), by path or by inode.
 ///
 /// # Arguments
 ///
@@ -177,6 +222,11 @@ pub fn check(
     let root = resolved;
     if !canon.starts_with(&root) {
         return Err("outside rule root".into());
+    }
+    // A candidate holding the temp dir (TMPDIR=~/.cache/tmp, cleaned as a ~/.cache entry) would
+    // delete the directory every tool needs for scratch files.
+    if fs::canonicalize(&ctx.tmp).is_ok_and(|t| t.starts_with(&canon)) {
+        return Err("is or contains the temp dir".into());
     }
     // As root, /proc shows PrivateTmp services' and containers' paths in their own mount
     // namespace, so their live tmp files cannot be matched against host paths.
@@ -453,5 +503,60 @@ mod tests {
         );
         // a normal user may symlink their own ~/.cache
         assert_eq!(run(&c, &link, 7, &ctx()), Ok(()));
+    }
+
+    #[test]
+    fn snapshot_cache_reads_proc_once_within_max_age() {
+        let mut cache = SnapshotCache::new(PathBuf::from("/proc"), Duration::from_secs(60));
+        for _ in 0..3 {
+            assert!(cache.get().is_some());
+        }
+        assert_eq!(cache.reads, 1, "three quick lookups share one /proc read");
+    }
+
+    #[test]
+    fn snapshot_cache_rereads_after_max_age_and_sees_new_files() {
+        let (_t, c) = fixture();
+        let mut cache = SnapshotCache::new(PathBuf::from("/proc"), Duration::ZERO);
+        let uses = |snap: &InUse| snap.paths.iter().any(|p| p.starts_with(&c));
+        assert!(!uses(cache.get().unwrap()), "nothing holds the fixture yet");
+        let _held = File::open(c.join("f")).unwrap(); // opened after the first snapshot
+        assert!(
+            uses(cache.get().unwrap()),
+            "the re-read sees the new open file"
+        );
+        assert_eq!(cache.reads, 2);
+    }
+
+    #[test]
+    fn snapshot_cache_without_proc_yields_none_and_retries() {
+        let t = tempfile::tempdir().unwrap();
+        let mut cache = SnapshotCache::new(t.path().join("noproc"), Duration::ZERO);
+        assert!(cache.get().is_none());
+        assert!(cache.get().is_none());
+        assert_eq!(cache.reads, 2);
+    }
+
+    #[test]
+    fn refuses_candidate_that_is_or_contains_the_temp_dir() {
+        // ~/.cache/tmp as TMPDIR: the xdg-cache rule would otherwise delete the temp dir itself
+        let (t, c) = fixture();
+        let mut inside = ctx();
+        inside.tmp = c.join("sub");
+        fs::create_dir(&inside.tmp).unwrap();
+        assert_eq!(
+            run(&c, t.path(), 7, &inside),
+            Err("is or contains the temp dir".into())
+        );
+        inside.tmp = c.clone();
+        assert_eq!(
+            run(&c, t.path(), 7, &inside),
+            Err("is or contains the temp dir".into())
+        );
+        // a sibling of the temp dir is unaffected
+        let mut sibling = ctx();
+        sibling.tmp = t.path().join("elsewhere");
+        fs::create_dir(&sibling.tmp).unwrap();
+        assert_eq!(run(&c, t.path(), 7, &sibling), Ok(()));
     }
 }

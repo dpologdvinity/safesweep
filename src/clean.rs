@@ -12,14 +12,14 @@
 //! be created, nothing is removed. If it stops being writable midway, the run stops after
 //! reporting what it just did, so there is never an unrecorded deletion beyond the last one.
 
-use crate::guard::{check, in_use};
+use crate::guard::{SnapshotCache, check};
 use crate::render::{escape_path, escape_text, human};
 use crate::scan::measure;
 use crate::{Ctx, Row};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 /// The result of a [`clean`] run, for the caller to print.
 pub struct Outcome {
@@ -80,9 +80,12 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         .create(true)
         .append(true)
         .open(manifest_dir.join(format!("{secs}.log")))?;
+    // What processes have open is re-read at most once a second: re-reading it for every
+    // candidate (tens of milliseconds each) made a big cleanup slow, while a run-wide reading
+    // would go stale as large trees are deleted. See `SnapshotCache` for the trade-off.
+    let mut snapshot = SnapshotCache::new(ctx.proc_root.clone(), Duration::from_secs(1));
     for r in ok {
-        // Fresh /proc snapshot per candidate: a run-wide one goes stale while big trees are deleted.
-        let live = in_use(&ctx.proc_root).ok(); // None if /proc is unreadable: check() then refuses
+        let live = snapshot.get(); // None if /proc is unreadable: check() then refuses
         let root = r.rule.root_path(ctx);
         let fresh = measure(&r.path).map_err(|e| e.to_string()).and_then(|e| {
             check(
@@ -92,7 +95,7 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
                 &root,
                 r.rule.min_age_days,
                 ctx,
-                live.as_ref(),
+                live,
             )
             .map(|()| e)
         });
