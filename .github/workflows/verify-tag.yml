@@ -1,0 +1,48 @@
+# Reusable workflow: refuses to continue unless the tag is a real release tag that matches the
+# version in Cargo.toml. Every workflow that publishes something calls this first, so a wrongly
+# named tag (it once happened: a release was created with the tag "v") cannot publish anything.
+#
+# Output `kind` is `stable` or `prerelease` (a tag with a `-suffix`, such as v1.0.0-rc1).
+name: Verify release tag
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to verify, for example v0.6.1
+        type: string
+        required: true
+    outputs:
+      kind:
+        description: '"stable" or "prerelease"'
+        value: ${{ jobs.verify.outputs.kind }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.version.outputs.kind }}
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      # First, before the tag is used as a git ref anywhere: it must be vMAJOR.MINOR.PATCH[-pre].
+      - name: Tag must look like a release tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::'$TAG' is not a release tag (expected vMAJOR.MINOR.PATCH[-pre])"; exit 1; }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      # The first `version = "..."` line in Cargo.toml is the [package] version.
+      - name: Tag must match the version in Cargo.toml
+        id: version
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [ "v$ver" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version '$ver'"
+            exit 1
+          fi
+          if [[ $TAG == *-* ]]; then echo "kind=prerelease" >> "$GITHUB_OUTPUT"; else echo "kind=stable" >> "$GITHUB_OUTPUT"; fi

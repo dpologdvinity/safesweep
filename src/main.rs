@@ -1,13 +1,29 @@
+//! The `safesweep` command-line program: argument parsing and output only.
+//!
+//! The work is done by the `safesweep` library (see its crate documentation); this file turns
+//! command-line arguments into library calls and library results into text and exit codes.
+//!
+//! # Exit codes
+//!
+//! | Code | Meaning |
+//! |---|---|
+//! | 0 | success |
+//! | 1 | the command ran but something failed: a removal failed or could not be logged, `/proc`  or the terminal could not be used |
+//! | 2 | bad usage: unknown `--category`, unsafe `HOME` or `TMPDIR`, a flag that does not apply |
+
 use clap::{CommandFactory, Parser, Subcommand};
 use safesweep::render::{self, human};
 use safesweep::{Ctx, clean, collect, rules, tui, why, wsl};
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 use std::{env, fs};
+
+// The doc comments on `Cli` and `Cmd` are the `--help` text users see, so they are written for
+// users, not for developers.
 
 /// Clean caches and temp files that are provably safe to delete.
 #[derive(Parser)]
@@ -59,20 +75,27 @@ fn main() -> ExitCode {
     })
 }
 
-/// Exit 1: the command was valid but something on the system failed. Exit 2 is for bad usage.
+/// Prints `msg` as an error and returns exit code 1: the command was valid but something on the
+/// system failed. Exit code 2, for bad usage, comes from returning `Err` out of [`run`].
 fn runtime_error(msg: &str) -> ExitCode {
     eprintln!("error: {msg}");
     ExitCode::from(1)
 }
 
+/// Runs the chosen subcommand. `Err` means bad usage (exit code 2); everything else is reported
+/// through the returned exit code.
 fn run(cli: Cli) -> Result<ExitCode, String> {
     let cmd = cli.cmd.unwrap_or(Cmd::Scan { json: false });
-    if matches!(cmd, Cmd::Completions { .. } | Cmd::Man) && !cli.categories.is_empty() {
-        let name = if matches!(cmd, Cmd::Man) {
-            "man"
-        } else {
-            "completions"
-        };
+    // These subcommands do not use the rule table, so a --category would silently do nothing.
+    let ignores_category = match &cmd {
+        Cmd::Why { .. } => Some("why"),
+        Cmd::Completions { .. } => Some("completions"),
+        Cmd::Man => Some("man"),
+        _ => None,
+    };
+    if let Some(name) = ignores_category
+        && !cli.categories.is_empty()
+    {
         return Err(format!("--category does not apply to {name}"));
     }
     match cmd {
@@ -83,77 +106,112 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 "safesweep",
                 &mut std::io::stdout(),
             );
-            return Ok(ExitCode::SUCCESS);
+            Ok(ExitCode::SUCCESS)
         }
-        Cmd::Man => {
-            return match clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout()) {
-                Ok(()) => Ok(ExitCode::SUCCESS),
-                Err(e) => Ok(runtime_error(&format!("cannot write man page: {e}"))),
-            };
+        Cmd::Man => Ok(
+            match clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => runtime_error(&format!("cannot write man page: {e}")),
+            },
+        ),
+        Cmd::Why { interval_ms, top } => run_why(interval_ms, top),
+        Cmd::Scan { json } => {
+            let (_, rows) = scan_rows(&cli.categories)?;
+            if json {
+                println!("{}", render::json(&rows));
+            } else {
+                print!("{}", render::table(&rows));
+            }
+            Ok(ExitCode::SUCCESS)
         }
-        _ => {}
-    }
-    if let Cmd::Why { interval_ms, top } = cmd {
-        if !cli.categories.is_empty() {
-            return Err("--category does not apply to why".into());
-        }
-        return why(interval_ms, top);
-    }
-    let ctx = Ctx::from_env()?;
-    let selected = rules::select(&cli.categories)?;
-    if matches!(cmd, Cmd::Tui) {
-        if !std::io::stdout().is_terminal() {
-            return Err("tui needs an interactive terminal".into());
-        }
-        let dir = ctx.home.join(".local/state/safesweep");
-        let failed = match tui::run(&selected, &ctx, &dir) {
-            Ok(failed) => failed,
-            Err(e) => return Ok(runtime_error(&format!("terminal error: {e}"))),
-        };
-        return Ok(if failed {
-            ExitCode::from(1)
-        } else {
-            ExitCode::SUCCESS
-        });
-    }
-    let rows = collect(&selected, &ctx);
-    match cmd {
-        Cmd::Why { .. } | Cmd::Completions { .. } | Cmd::Man => unreachable!("handled above"),
-        Cmd::Tui => unreachable!("handled above"),
-        Cmd::Scan { json: true } => println!("{}", render::json(&rows)),
-        Cmd::Scan { json: false } => print!("{}", render::table(&rows)),
         Cmd::Clean { apply } => {
-            let dir = ctx.home.join(".local/state/safesweep");
-            let out = match clean::clean(&rows, &ctx, apply, &dir) {
-                Ok(out) => out,
-                Err(e) => {
-                    eprintln!("error: cannot write manifest in {}: {e}", dir.display());
-                    return Ok(ExitCode::from(1));
-                }
-            };
-            for line in &out.lines {
-                println!("{line}");
-            }
-            println!(
-                "{} {}",
-                if apply { "freed" } else { "would free" },
-                human(out.freed)
-            );
-            let on_wsl =
-                fs::read_to_string(ctx.proc_root.join("version")).is_ok_and(|v| wsl::is_wsl(&v));
-            if apply && out.freed > 0 && on_wsl {
-                let distro = env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "<distro>".into());
-                print!("\n{}", wsl::hint(&distro));
-            }
-            if out.failed > 0 {
-                return Ok(ExitCode::from(1));
-            }
+            let (ctx, rows) = scan_rows(&cli.categories)?;
+            Ok(run_clean(&ctx, &rows, apply))
         }
+        Cmd::Tui => run_tui(&cli.categories),
     }
-    Ok(ExitCode::SUCCESS)
 }
 
-fn why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
+/// Validates the environment and the selected rule ids, and returns the context together with
+/// the judged candidates of those rules.
+///
+/// # Errors
+///
+/// Bad usage: an unsafe `HOME` or `TMPDIR` (see [`Ctx::from_env`]) or an unknown rule id.
+fn scan_rows(categories: &[String]) -> Result<(Ctx, Vec<safesweep::Row>), String> {
+    let ctx = Ctx::from_env()?;
+    let selected = rules::select(categories)?;
+    let rows = collect(&selected, &ctx);
+    Ok((ctx, rows))
+}
+
+/// Where the log of removals is kept: `~/.local/state/safesweep/`.
+fn manifest_dir(ctx: &Ctx) -> PathBuf {
+    ctx.home.join(".local/state/safesweep")
+}
+
+/// `safesweep clean [--apply]`: prints what was (or would be) removed and the space freed, plus
+/// the compaction hint on WSL after a real cleanup. Returns exit code 1 if any removal failed or
+/// the log could not be created.
+fn run_clean(ctx: &Ctx, rows: &[safesweep::Row], apply: bool) -> ExitCode {
+    let dir = manifest_dir(ctx);
+    let out = match clean::clean(rows, ctx, apply, &dir) {
+        Ok(out) => out,
+        Err(e) => {
+            eprintln!("error: cannot write manifest in {}: {e}", dir.display());
+            return ExitCode::from(1);
+        }
+    };
+    for line in &out.lines {
+        println!("{line}");
+    }
+    println!(
+        "{} {}",
+        if apply { "freed" } else { "would free" },
+        human(out.freed)
+    );
+    let on_wsl = fs::read_to_string(ctx.proc_root.join("version")).is_ok_and(|v| wsl::is_wsl(&v));
+    if apply && out.freed > 0 && on_wsl {
+        let distro = env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "<distro>".into());
+        print!("\n{}", wsl::hint(&distro));
+    }
+    if out.failed > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `safesweep tui`: the interactive explorer.
+///
+/// # Errors
+///
+/// Bad usage (exit 2) if standard output is not a terminal, or `HOME`, `TMPDIR` or the category
+/// ids are invalid. A terminal failure, or a delete that failed during the session, exits 1.
+fn run_tui(categories: &[String]) -> Result<ExitCode, String> {
+    let ctx = Ctx::from_env()?;
+    let selected = rules::select(categories)?;
+    if !std::io::stdout().is_terminal() {
+        return Err("tui needs an interactive terminal".into());
+    }
+    Ok(match tui::run(&selected, &ctx, &manifest_dir(&ctx)) {
+        Ok(false) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::from(1),
+        Err(e) => runtime_error(&format!("terminal error: {e}")),
+    })
+}
+
+/// `safesweep why`: samples the CPU for `interval_ms`, then prints how busy the machine is, CPU
+/// per program, and the busiest processes with their command lines.
+///
+/// All output is built in memory and written once, ignoring write errors, so that
+/// `safesweep why | head` (which closes the pipe early) is not a crash.
+///
+/// # Errors
+///
+/// Returns a usage error (exit 2) if `interval_ms` is under 100: a zero-length window would
+/// print made-up numbers. An unreadable `/proc` exits 1 instead.
+fn run_why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
     // Sampling a zero-length window prints made-up numbers.
     if interval_ms < 100 {
         return Err("--interval-ms must be at least 100".into());

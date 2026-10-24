@@ -1,4 +1,11 @@
-// Tests the launcher against a fake platform package: node npm/test.js
+// Tests for the npm launcher (npm/safesweep/bin/safesweep.js).
+//
+// Run with:  node --test npm/test.js     (Node 18 or newer; CI runs it on every pull request)
+//
+// The launcher is tested against a fake platform package: a small shell script in the place the
+// real native binary would be. That checks what the launcher is responsible for (finding the
+// binary, passing arguments, output and exit codes through, forwarding signals, failing clearly)
+// without needing a real build.
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
@@ -7,6 +14,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
+// The platform package name suffix for the machine the tests run on.
 const arch = { x64: "x64", arm64: "arm64" }[process.arch];
 
 // A project dir holding the launcher and a fake `safesweep-linux-<arch>` whose binary is `body`.
@@ -21,6 +29,15 @@ function project(body) {
   return { dir, launcher: path.join(bin, "safesweep.js") };
 }
 
+// What the kernel says about a process, for failure messages ("S sleeping", "Z zombie", ...).
+const procState = (pid) => {
+  try {
+    return fs.readFileSync(`/proc/${pid}/status`, "utf8").split("\n").filter((l) => /^(State|PPid|SigBlk|SigIgn|SigCgt):/.test(l)).join("; ");
+  } catch {
+    return "gone";
+  }
+};
+
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -29,7 +46,10 @@ const alive = (pid) => {
     return false;
   }
 };
-const until = async (cond, ms = 3000) => {
+// Polls `cond` until it is true or `ms` pass; returns its last value. The default is generous on
+// purpose: a loaded machine can take seconds to start a process, and a wait that ends as soon
+// as the condition holds costs nothing when everything is fast.
+const until = async (cond, ms = 20000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (cond()) return true;
@@ -47,17 +67,25 @@ test("passes arguments, stdout and the exit code through", () => {
 
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   test(`${sig} to the launcher stops the native process too`, async () => {
+    // the fake binary records its own process id, then becomes a long `sleep`
     const { dir, launcher } = project(`echo $$ > "${"${PIDFILE}"}"; exec sleep 60`);
     const pidfile = path.join(dir, "pid");
     const child = spawn(process.execPath, [launcher], { env: { ...process.env, PIDFILE: pidfile }, stdio: "ignore" });
-    assert.ok(await until(() => fs.existsSync(pidfile) && fs.readFileSync(pidfile, "utf8").trim()), "child started");
-    const native = Number(fs.readFileSync(pidfile, "utf8"));
-    const exited = new Promise((res) => child.on("exit", (code, signal) => res({ code, signal })));
-    child.kill(sig);
-    const { code, signal } = await exited;
-    assert.ok(await until(() => !alive(native)), `native process ${native} still running after ${sig}`);
-    // like a shell: killed by the signal, or 128+n
-    assert.ok(signal === sig || code === 128 + os.constants.signals[sig], `exit was code=${code} signal=${signal}`);
+    let native;
+    try {
+      assert.ok(await until(() => fs.existsSync(pidfile) && fs.readFileSync(pidfile, "utf8").trim()), "child started");
+      native = Number(fs.readFileSync(pidfile, "utf8"));
+      const exited = new Promise((res) => child.on("exit", (code, signal) => res({ code, signal })));
+      child.kill(sig);
+      const { code, signal } = await exited;
+      assert.ok(await until(() => !alive(native)), `native process ${native} still running after ${sig}: ${procState(native)}`);
+      // like a shell: killed by the signal, or 128+n
+      assert.ok(signal === sig || code === 128 + os.constants.signals[sig], `exit was code=${code} signal=${signal}`);
+    } finally {
+      // never leave a stray `sleep` behind, even when an assertion above failed
+      child.kill("SIGKILL");
+      if (native && alive(native)) process.kill(native, "SIGKILL");
+    }
   });
 }
 

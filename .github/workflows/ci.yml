@@ -1,15 +1,62 @@
+# Continuous integration: runs on every pull request and every push to master.
+#
+# Stages, in order (a failing stage stops the ones after it, so a broken change fails fast):
+#   1. setup     the environment installs, Cargo.lock is in sync, dependencies download (and are cached)
+#   2. lint      format, clippy (also enforces documentation), rustdoc, shell scripts, workflows,
+#                and a check that every link in the documentation resolves
+#   3. test      the full test suite on the newest stable Rust and on the oldest supported one
+#      coverage  the same tests with line coverage; fails below 90%
+#   4. build     release binary, .deb, .rpm, Python wheel, Nix package: everything that ships must build
+# `audit` (known-vulnerable dependencies) runs alongside and also weekly, so a new advisory is noticed
+# even when nobody pushes.
+#
+# Releases are a separate workflow (release.yml), started by publishing a GitHub release.
 name: CI
 
 on:
   push:
     branches: [master]
   pull_request:
+    branches: [master]
+  schedule:
+    - cron: "17 5 * * 1" # Mondays: re-run the dependency audit
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0 # smaller caches and no benefit on a fresh runner
+
 jobs:
-  check:
+  # 1. Does the project install at all, from the committed lock file?
+  setup:
+    # The weekly schedule only exists for `audit`; everything else hangs off this job.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Show the toolchain
+        run: rustc --version --verbose && cargo --version
+      # --locked fails if Cargo.lock does not match Cargo.toml (a version bump that forgot the
+      # lock file), which is what would otherwise break the release after the tag is public.
+      - name: Dependencies resolve and download from Cargo.lock
+        run: cargo fetch --locked
+
+  # 2. Static checks. Cheap, so they run before the slow tests.
+  lint:
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -19,11 +66,60 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # Clippy is the type and lint analysis. `missing_docs` is on in src/lib.rs, so this also
+      # fails when a public item has no documentation.
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      # Broken links in the documentation, including private items, are errors.
+      - run: cargo doc --locked --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Shell scripts
+        run: shellcheck -s bash apt/build.sh npm/build.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
+      - name: Workflow files
+        run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
+  # Every link in the documentation, including in-page anchors, must resolve.
+  docs-links:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: --config lychee.toml README.md ARCHITECTURE.md CONTRIBUTING.md SECURITY.md RELEASING.md CHANGELOG.md
+          fail: true
+
+  # 3a. The test suite, on the newest stable Rust and on `rust-version` from Cargo.toml (the oldest
+  # compiler the project promises to support). One job per toolchain; if one fails, stop the other.
+  test:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        toolchain: [stable, "1.88"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: ${{ matrix.toolchain }}
+      # Ubuntu 24.04 blocks unprivileged user namespaces by default. Some tests need
+      # `unshare -rm` (mount-namespace and container safety checks) and fail, not skip, on CI.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: cargo test --locked
+
+  # The npm launcher is JavaScript; it has its own tests (signal forwarding, exit codes).
   npm-launcher:
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -34,7 +130,97 @@ jobs:
           node-version: 22
       - run: node --test npm/test.js
 
+  # 3b. Line coverage of the Rust tests. Fails under 90% (the measured value when this was set
+  # was 95%). The report is attached to the run as an artifact and shown in the job summary.
+  coverage:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Run the tests with coverage
+        run: |
+          cargo llvm-cov --locked --lcov --output-path lcov.info --fail-under-lines 90
+          {
+            echo '### Test coverage'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+  # Known-vulnerable dependencies (RustSec advisory database).
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: cargo-audit@0.22.2
+      - run: cargo audit --deny warnings
+
+  # 4. Everything that ships must build. Only runs once lint and tests pass.
+  build:
+    needs: [lint, test, npm-launcher, coverage, docs-links]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: build
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: cargo-deb@3.8.0,cargo-generate-rpm@0.21.1
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # The same static binary the release publishes.
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Binary runs and reports its version
+        run: target/x86_64-unknown-linux-musl/release/safesweep --version
+      - name: Completions, man page, .deb and .rpm
+        run: |
+          packaging/gen-extras.sh target/x86_64-unknown-linux-musl/release/safesweep
+          cargo deb --no-build --target x86_64-unknown-linux-musl -o dist/
+          cargo generate-rpm --target x86_64-unknown-linux-musl -o dist/
+      - name: Python wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          target: x86_64
+          manylinux: manylinux2014
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            target/x86_64-unknown-linux-musl/release/safesweep
+          retention-days: 7
+
+  # The Nix flake (and its committed flake.lock) must build too.
   nix:
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

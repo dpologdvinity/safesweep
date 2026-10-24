@@ -1,3 +1,23 @@
+//! Finding candidate paths and measuring them.
+//!
+//! This module answers two questions about the filesystem, and never changes it:
+//!
+//! 1. [`find`]: which paths could a rule delete? (a [`Matcher`] decides)
+//! 2. [`measure`]: what is inside one candidate? Its size, newest change, owner, special
+//!    files and inodes, as an [`Entry`].
+//!
+//! Whether a candidate is *safe* to delete is decided later, in [`crate::guard`], from the
+//! [`Entry`] produced here. Keeping the two apart means this module only has to observe, and
+//! the guard is the single place that says "no".
+//!
+//! # Conservative by design
+//!
+//! [`measure`] fails (returns an error) whenever it cannot see the whole tree or when deleting
+//! the tree would not behave like a plain removal: an unreadable directory, a mount point, a
+//! nested `.git`, or a read-only directory. A candidate that cannot be measured is skipped, never
+//! guessed at. The walks never follow symlinks and never cross onto another filesystem.
+
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -5,34 +25,64 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
-/// Which paths under a rule root are candidates.
+/// How a rule picks candidates under its root directory.
 pub enum Matcher {
-    /// The root itself.
+    /// The root itself is the single candidate (for example `~/.cache/pip`).
     Whole,
-    /// Each direct child of the root, except the named ones.
-    Children { exclude: &'static [&'static str] },
-    /// Every directory with this name, without descending into matches.
+    /// Each direct child of the root is a candidate, except the named entries.
+    ///
+    /// The exclusions let one rule own a directory that another rule handles separately,
+    /// such as `~/.cache/pip` being excluded from the `~/.cache` rule.
+    Children {
+        /// File names (not paths) to skip.
+        exclude: &'static [&'static str],
+    },
+    /// Every directory with this exact name anywhere under the root (for example
+    /// `__pycache__`). A match is never searched further, so nested copies are not listed twice.
+    /// Hidden directories (names starting with `.`) are not entered.
     NamedDirs(&'static str),
-    /// Build directories (`node_modules`, `target`, `.venv`) of git projects idle for 30+ days.
+    /// Build directories (`node_modules`, `target`, `.venv`) of git projects that have had no
+    /// git activity for 30 days.
+    ///
+    /// A directory only counts if a project marker file sits next to it (`package.json`,
+    /// `Cargo.toml`, ...) *and* it contains a file only the tool itself creates (`pyvenv.cfg`,
+    /// `CACHEDIR.TAG`, ...), so a hand-made folder with the same name is never taken for build
+    /// output. Projects without a readable `.git` directory are never listed.
     IdleArtifacts,
 }
 
+/// What [`measure`] found inside one candidate (a file, or a whole directory tree).
+///
+/// Every field is a plain observation; [`crate::guard::check`] turns them into a verdict.
 pub struct Entry {
-    /// Allocated bytes of regular files with a single hard link.
+    /// Disk space the tree would free, in bytes: allocated blocks of regular files that have a
+    /// single hard link. Files with more links are not counted, because deleting one link frees
+    /// nothing (uv hardlinks its cache into virtual environments).
     pub bytes: u64,
-    /// Newest mtime of any entry in the tree.
+    /// Time of the most recent change anywhere in the tree: the newer of modification time and
+    /// inode change time, over every entry. Both are used because tools like `tar` and
+    /// `rsync -a` set the modification time back to the original, so it alone can make a tree
+    /// unpacked a minute ago look years old; the inode change time cannot be set by any program.
     pub newest: SystemTime,
-    /// `Some(uid)` only if every entry in the tree has that owner.
+    /// `Some(uid)` only if every entry in the tree belongs to that one user; `None` if owners
+    /// are mixed.
     pub owner: Option<u32>,
-    /// Tree contains a socket or FIFO.
+    /// The tree contains a socket or a named pipe (FIFO). A live program may be using it even
+    /// though no file path shows up as open.
     pub has_special: bool,
-    /// The top path itself is a symlink.
+    /// The candidate path itself is a symbolic link (links inside the tree are not followed).
     pub is_symlink: bool,
-    /// `(dev, inode)` of every entry, to match against what processes have open.
-    pub inodes: std::collections::HashSet<(u64, u64)>,
+    /// `(device, inode)` of every entry in the tree. The guard matches these against what
+    /// running processes have open, which works even when a process sees the path differently
+    /// (containers, other mount namespaces).
+    pub inodes: HashSet<(u64, u64)>,
 }
 
-/// Candidate paths under `root`. A missing or unreadable root yields none.
+/// Returns the candidate paths that `m` selects under `root`.
+///
+/// A `root` that does not exist or cannot be read yields an empty list rather than an error: a
+/// cache directory that was never created simply has nothing to clean. Order is unspecified.
+/// Symbolic links are not followed, so a link never leads the walk outside `root`.
 pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
     if fs::symlink_metadata(root).is_err() {
         return Vec::new();
@@ -55,6 +105,7 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
                 .min_depth(1)
                 .into_iter();
             while let Some(entry) = walk.next() {
+                // an unreadable directory must not end the whole walk
                 let Ok(entry) = entry else { continue };
                 if !entry.file_type().is_dir() {
                     continue;
@@ -72,9 +123,16 @@ pub fn find(root: &Path, m: &Matcher) -> Vec<PathBuf> {
     }
 }
 
-/// Directory name -> files that must sit next to it for it to count as that tool's artifact.
-/// Each also needs a file inside that only the tool itself creates, so a user's own directory
-/// of the same name (or `.venv/src/<pkg>` editable checkouts' parent) is never taken for build output.
+/// The build directories [`Matcher::IdleArtifacts`] recognises.
+///
+/// Each entry is `(directory name, project marker files, tool fingerprint files)`:
+///
+/// - the directory must sit next to at least one *marker file* (for example `package.json` next
+///   to `node_modules`), so an unrelated folder that happens to be called `target` is ignored;
+/// - the directory must contain at least one *fingerprint file* that only the tool itself
+///   creates (for example `pyvenv.cfg` inside a virtual environment). Without this, a hand-made
+///   `.venv` holding someone's code, such as the editable checkouts pip puts in `.venv/src`,
+///   would be mistaken for build output and deleted.
 const ARTIFACTS: [(&str, &[&str], &[&str]); 3] = [
     (
         "node_modules",
@@ -97,10 +155,21 @@ const ARTIFACTS: [(&str, &[&str], &[&str]); 3] = [
         &["pyvenv.cfg"],
     ),
 ];
+
+/// A project counts as idle after this many days without git activity.
 const IDLE_DAYS: u64 = 30;
+
+/// How many directory levels below the root [`idle_artifacts`] searches.
 const MAX_DEPTH: usize = 6;
 
-// shortcut: idleness uses the real clock, not Ctx.now; thread Ctx through find if tests need to fake it.
+/// Walks `root` for build directories of idle git projects (see [`Matcher::IdleArtifacts`]).
+///
+/// Hidden directories are skipped (except `.venv`, which is itself a candidate name), and a
+/// directory that is not a real `node_modules` is not entered, which keeps the walk fast on
+/// large trees. Once a build directory is found, its contents are not searched.
+///
+/// Idleness is judged against the real clock, not [`crate::Ctx::now`]. This is a shortcut:
+/// tests cannot fake it, so they back-date the git files instead.
 fn idle_artifacts(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut walk = WalkDir::new(root)
@@ -130,6 +199,8 @@ fn idle_artifacts(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// True if `entry` is a build directory of a known tool: right name, a project marker file next
+/// to it, and a fingerprint file inside it. See [`ARTIFACTS`].
 fn is_artifact(entry: &walkdir::DirEntry) -> bool {
     let Some(project) = entry.path().parent() else {
         return false;
@@ -142,8 +213,12 @@ fn is_artifact(entry: &walkdir::DirEntry) -> bool {
     })
 }
 
-/// Newest mtime of the files git touches on commit, checkout and fetch: in the main checkout,
-/// on any branch, and in linked worktrees (commits there never touch the main `logs/HEAD`).
+/// Time of the newest git activity in the repository whose `.git` directory is `git`, or `None`
+/// if there is none to read (not a git directory, or `.git` is a file as in a linked worktree).
+///
+/// It takes the newest modification time of the files git touches on commit, checkout and
+/// fetch: the main checkout, every branch's reflog, and every linked worktree. Worktrees
+/// matter because commits made there never touch the main checkout's `logs/HEAD`.
 fn git_activity(git: &Path) -> Option<SystemTime> {
     let mtime = |p: PathBuf| fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut newest = ["logs/HEAD", "index", "FETCH_HEAD"]
@@ -168,7 +243,10 @@ fn git_activity(git: &Path) -> Option<SystemTime> {
     newest
 }
 
-/// True if the project's last git activity is older than `IDLE_DAYS`. No `.git` means unknown, so not idle.
+/// True if the project's last git activity is older than [`IDLE_DAYS`].
+///
+/// A project with no readable `.git` directory has unknown activity, and unknown is treated as
+/// *not* idle: the tool only acts on projects it can positively show to be abandoned.
 fn project_idle(project: &Path) -> bool {
     let activity = git_activity(&project.join(".git"));
     activity.is_some_and(|t| {
@@ -177,13 +255,29 @@ fn project_idle(project: &Path) -> bool {
     })
 }
 
-/// Size, age, ownership and special files of the tree at `path`.
-/// Any unreadable entry is an error: a tree we cannot fully see is not safe to delete.
+/// Measures the tree at `path`, reading the mount table itself.
+///
+/// This is [`measure_with`] for a single path. When measuring many paths, read the mount table
+/// once with [`mount_points`] and call [`measure_with`], which is what a scan does.
+///
+/// # Errors
+///
+/// Returns an error if the tree cannot be fully seen or would not delete cleanly: any entry
+/// that cannot be read, a mount point at or below `path`, a `.git` entry anywhere inside, or a
+/// directory without owner write permission. A tree we cannot fully see is not safe to delete.
 pub fn measure(path: &Path) -> io::Result<Entry> {
     measure_with(path, &mount_points()?)
 }
 
-/// `measure` against a mount table read once by the caller (a scan measures hundreds of paths).
+/// Measures the tree at `path` against an already-read mount table (`mounts`).
+///
+/// If `path` is itself a symbolic link, the link is described and not followed: the returned
+/// [`Entry`] has `is_symlink` set and nothing else filled in.
+///
+/// # Errors
+///
+/// See [`measure`]. Each refusal has a short reason as the error message, which is shown to the
+/// user as the "skipped" reason.
 pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
     let top = fs::symlink_metadata(path)?;
     let mut e = Entry {
@@ -198,7 +292,8 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
         return Ok(e);
     }
     // remove_dir_all would descend into a mounted filesystem, so refuse instead of skipping it.
-    // st_dev misses bind mounts from the same filesystem and a candidate that is itself a mount.
+    // Comparing device numbers alone misses a bind mount from the same filesystem and a
+    // candidate that is itself a mount point, so the mount table is checked as well.
     let canon = fs::canonicalize(path)?;
     if mounts.iter().any(|m| m.starts_with(&canon)) {
         return Err(io::Error::other("contains a mount point"));
@@ -233,15 +328,23 @@ pub fn measure_with(path: &Path, mounts: &[PathBuf]) -> io::Result<Entry> {
     Ok(e)
 }
 
-/// Newer of mtime and ctime. tar, `cp -p` and `rsync -a` backdate mtime; nobody can backdate ctime.
+/// The time of the last change to a file: the newer of its modification time and its inode
+/// change time.
+///
+/// Both are needed. Tools like `tar`, `cp -p` and `rsync -a` set the modification time back to
+/// the original, so a tree unpacked a minute ago can look years old by that clock. The inode
+/// change time cannot be set by any program, so it always reflects when the file really arrived.
 fn changed(md: &fs::Metadata) -> io::Result<SystemTime> {
     let ctime = UNIX_EPOCH + Duration::new(md.ctime().max(0) as u64, md.ctime_nsec() as u32);
     Ok(md.modified()?.max(ctime))
 }
 
-/// Every mount point on the system, from `/proc/self/mountinfo`.
-/// Mount points from mountinfo bytes. Read as bytes: one mount point that is not valid UTF-8
-/// must not make every candidate unverifiable.
+/// Extracts the mount points from the bytes of `/proc/self/mountinfo`.
+///
+/// The file is read as bytes, not text: a single mount point whose path is not valid UTF-8
+/// must not make every candidate impossible to verify. The mount point is the fifth
+/// space-separated field of each line, with spaces and other special characters written as
+/// octal escapes (see [`unescape`]).
 fn parse_mountinfo(info: &[u8]) -> Vec<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
     info.split(|&b| b == b'\n')
@@ -250,11 +353,18 @@ fn parse_mountinfo(info: &[u8]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Every mount point on the system, read from `/proc/self/mountinfo`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, for example when `/proc` is not mounted. The
+/// caller must then treat candidates as unverifiable.
 pub fn mount_points() -> io::Result<Vec<PathBuf>> {
     Ok(parse_mountinfo(&fs::read("/proc/self/mountinfo")?))
 }
 
-/// Undo mountinfo's octal escapes (`\040` is a space).
+/// Decodes the octal escapes the kernel uses in `mountinfo` paths: `\040` is a space, `\011` a
+/// tab, `\134` a backslash. Anything else, including a lone backslash, is kept as is.
 fn unescape(s: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
@@ -278,6 +388,9 @@ fn unescape(s: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+/// Unit tests. Every test builds its own tree in a temporary directory and never touches the
+/// real home directory. File ages are set with `filetime`; trees are "aged" by moving the clock
+/// instead where the inode change time (which cannot be back-dated) is involved.
 mod tests {
     use super::*;
     use filetime::{FileTime, set_file_mtime};

@@ -1,13 +1,37 @@
+//! Turning candidates and sizes into text that is safe to print.
+//!
+//! Two things matter here beyond layout:
+//!
+//! - **File names are untrusted input.** A name can contain a newline (which would draw a fake
+//!   row in the table), escape sequences (which would drive the terminal), or bytes that are not
+//!   valid text. Every path and every message that may contain a path goes through
+//!   [`escape_path`] or [`escape_text`] before it is shown or logged. Output built from these
+//!   functions can never contain a raw control character.
+//! - **Sizes use binary units** (KiB, MiB, ...), the same as most disk tools, see [`human`].
+
 use crate::Row;
 use crate::rules::Regen;
 
-/// A path as safe to print: control characters (newlines would fake extra rows) and bidi
-/// overrides become escapes, and invalid UTF-8 bytes become `\xNN`.
+/// Returns `path` in a form that is safe to print and to write to a log.
+///
+/// What changes:
+///
+/// - `\n`, `\r` and `\t` become the two characters `\n`, `\r`, `\t`;
+/// - other control characters (such as the escape character that starts terminal commands) and
+///   the bidirectional text overrides that can reorder text on screen become `\u{hex}`;
+/// - bytes that are not valid UTF-8 become `\xNN`;
+/// - a backslash becomes two backslashes, so a file literally named `a\nb` never looks the same
+///   as one containing a newline.
+///
+/// Everything else, including non-ASCII letters, is kept. Distinct paths always give distinct
+/// results.
 pub fn escape_path(path: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     escape_bytes(path.as_os_str().as_bytes())
 }
 
+/// The shared implementation of [`escape_path`] and [`escape_text`], working on raw bytes so that
+/// invalid UTF-8 can be represented too.
 fn escape_bytes(bytes: &[u8]) -> String {
     let mut out = String::new();
     for chunk in bytes.utf8_chunks() {
@@ -34,12 +58,15 @@ fn escape_bytes(bytes: &[u8]) -> String {
     out
 }
 
-/// `escape_path` for text that may carry a path inside it, such as an I/O error message.
+/// [`escape_path`] for text that may carry a path inside it, such as the message of an I/O
+/// error ("permission denied: /tmp/the\nname"). Use it for every message built from the
+/// filesystem before showing or logging it.
 pub fn escape_text(s: &str) -> String {
     escape_bytes(s.as_bytes())
 }
 
-/// Binary-unit size: `"512 B"`, `"1.5 KiB"`.
+/// Formats a byte count with binary units and at most one decimal: `0 B`, `512 B`, `1.5 KiB`,
+/// `5.0 GiB`. Values under 1024 are shown as whole bytes. Units go up to TiB.
 pub fn human(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {
@@ -54,6 +81,9 @@ pub fn human(bytes: u64) -> String {
     format!("{size:.1} {}", UNITS[unit])
 }
 
+/// Renders `rows` as the table `safesweep scan` prints: a header, one aligned line per row
+/// (category, size, regeneration cost, status, escaped path), and a final line with the total
+/// of the rows whose status is `ok`. Skipped rows are listed but do not count towards the total.
 pub fn table(rows: &[Row]) -> String {
     let regen = |r: Regen| match r {
         Regen::Free => "free",
@@ -91,10 +121,19 @@ pub fn table(rows: &[Row]) -> String {
     out
 }
 
+/// Renders `rows` as pretty-printed JSON, the output of `safesweep scan --json`.
+///
+/// Paths are escaped with [`escape_path`], so the output is always valid JSON even for file
+/// names that are not valid UTF-8.
+///
+/// # Panics
+///
+/// Never in practice: a [`Row`] contains only strings and numbers, which always serialize.
 pub fn json(rows: &[Row]) -> String {
     serde_json::to_string_pretty(rows).expect("rows always serialize")
 }
 
+/// Unit tests for escaping, sizes and the table and JSON output.
 #[cfg(test)]
 mod tests {
     use super::*;
