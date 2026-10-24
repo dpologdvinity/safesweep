@@ -1,8 +1,9 @@
 # Publishes the npm packages (`safesweep` and its two platform packages) so npm, pnpm, yarn and bun
 # can install the tool. See npm/build.sh for how they are built from the release binaries.
 # Prereleases go under the `next` dist-tag, so `npm install safesweep` never picks them up.
-# Authenticates with npm trusted publishing when it is configured on npmjs.com, otherwise with the
-# NPM_TOKEN repository secret.
+# Authenticates with npm trusted publishing (OIDC) first. Only if that fails does it retry with the
+# NPM_TOKEN repository secret, so a mistake in the npmjs.com setting cannot block a release. See
+# npm/publish.sh for the publishing loop. The trusted-publisher setting on npmjs.com names THIS file.
 name: Publish to npm
 
 # Runs after "Release binaries" succeeds (the npm packages are built from those binaries), or by
@@ -39,7 +40,6 @@ jobs:
     env:
       # for a release-triggered run, head_branch is the release tag
       TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -49,18 +49,36 @@ jobs:
         with:
           node-version: 24 # trusted publishing needs npm >= 11.5.1
           registry-url: https://registry.npmjs.org
-      - name: Publish
+      - name: Build the packages from the release binaries
+        id: build
         env:
           KIND: ${{ needs.verify.outputs.kind }}
         run: |
-          # Uses npm trusted publishing (OIDC) when it is configured on npmjs.com; NPM_TOKEN, if set,
-          # is only a fallback and can be deleted once trusted publishing works.
-          # prereleases go to the `next` dist-tag so `npm install safesweep` never picks them up
-          dist=latest; [ "$KIND" = prerelease ] && dist=next
           out=$(mktemp -d)
           npm/build.sh "$TAG" "$out"
-          # platform packages first, so the launcher's optionalDependencies resolve
-          for p in safesweep-linux-x64 safesweep-linux-arm64 safesweep; do
-            if npm view "$p@${TAG#v}" version >/dev/null 2>&1; then echo "$p@${TAG#v} already published"; continue; fi
-            (cd "$out/$p" && npm publish --provenance --access public --tag "$dist")
-          done
+          # prereleases go to the `next` dist-tag so `npm install safesweep` never picks them up
+          dist=latest; [ "$KIND" = prerelease ] && dist=next
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+          echo "dist=$dist" >> "$GITHUB_OUTPUT"
+      # First choice: npm trusted publishing (OIDC). No token is in the environment, so npm
+      # exchanges this run's identity for a short-lived publish credential. The first successful
+      # publish also validates the trusted-publisher setting on npmjs.com.
+      - name: Publish with trusted publishing
+        id: oidc
+        continue-on-error: true
+        env:
+          OUT: ${{ steps.build.outputs.out }}
+          DIST: ${{ steps.build.outputs.dist }}
+        run: npm/publish.sh "$TAG" "$DIST" "$OUT"
+      # Fallback: the NPM_TOKEN secret, only if trusted publishing failed. publish.sh skips versions
+      # that are already published, so this publishes only what the step above did not. Delete
+      # the secret (and this step) once trusted publishing has worked for a release.
+      - name: Publish with the token (fallback)
+        if: steps.oidc.outcome == 'failure'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          OUT: ${{ steps.build.outputs.out }}
+          DIST: ${{ steps.build.outputs.dist }}
+        run: |
+          echo "::warning::trusted publishing failed; publishing with NPM_TOKEN"
+          npm/publish.sh "$TAG" "$DIST" "$OUT"

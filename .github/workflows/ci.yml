@@ -76,7 +76,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Shell scripts
-        run: shellcheck -s bash apt/build.sh npm/build.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
+        run: shellcheck -s bash apt/build.sh npm/build.sh npm/publish.sh packaging/gen-extras.sh demo/make.sh demo/env.sh
       - name: Workflow files
         run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
