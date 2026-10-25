@@ -1,0 +1,20 @@
+Package: safesweep
+Architecture: amd64
+Version: 0.6.7-1
+Priority: optional
+Section: utils
+Maintainer: Kaitlyn Bassford <kaitlynbassford@gmail.com>
+Installed-Size: 2043
+Depends:
+Filename: pool/main/safesweep_0.6.7-1_amd64.deb
+Size: 713072
+MD5sum: c499cf8038f2b8598d428ab587a3073a
+SHA1: ef0dec100776bdccfa6f60cf374f2579351e1f33
+SHA256: f5435fe5395b46e694dc487fe940094ada64057db343b87399df27c93dc1fec3
+SHA512: 6ffb668101662025c84879874ea148977ab7536a5c23bf074237a4799c5efbde7367811227830da97be95d4c87b3b060ba3e67f8fdfaf2fdd353c159036560e1
+Homepage: https://github.com/dpologdvinity/safesweep
+Description: Clean caches and temp files that are provably safe to delete
+ Deletes cache and temp files only when it can prove they are safe: nothing
+ open, nothing recent, nothing shared. Also shows what is using the CPU
+ (safesweep why) and has an interactive explorer (safesweep tui).
+
