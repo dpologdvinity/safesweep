@@ -243,8 +243,7 @@ fn run_why(interval_ms: u64, top: usize) -> Result<ExitCode, String> {
     let _ = writeln!(out, "\n    PID   CPU%  COMMAND");
     for u in r.procs.iter().take(top) {
         let raw = fs::read(proc_root.join(u.pid.to_string()).join("cmdline")).unwrap_or_default();
-        let cmdline = why::command_line(&raw, &u.comm);
-        let cmdline: String = cmdline.chars().take(100).collect();
+        let cmdline = why::fit_cmdline(&why::command_line(&raw, &u.comm), 100);
         let _ = writeln!(out, "{:>7} {:>6.1}  {cmdline}", u.pid, u.pct);
     }
     if r.procs.is_empty() {

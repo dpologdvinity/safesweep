@@ -188,6 +188,19 @@ pub fn command_line(raw: &[u8], comm: &str) -> String {
     }
 }
 
+/// Truncates a command line to at most `max_chars` characters, appending `…` if truncated.
+pub fn fit_cmdline(cmdline: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if cmdline.chars().nth(max_chars).is_some() {
+        let prefix: String = cmdline.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{prefix}…")
+    } else {
+        cmdline.to_string()
+    }
+}
+
 /// Adds up the processes that share a name: `(name, total percent, number of processes)`,
 /// busiest first. Twelve `rustc` jobs then show as one line instead of twelve.
 pub fn by_program(procs: &[Usage]) -> Vec<(String, f64, usize)> {
@@ -308,6 +321,15 @@ mod tests {
         );
         assert_eq!(command_line(b"", "kworker/0:1"), "[kworker/0:1]");
         assert_eq!(command_line(b"", "x\x1by"), "[x\\u{1b}y]");
+    }
+
+    #[test]
+    fn fit_cmdline_truncates_with_ellipsis() {
+        assert_eq!(fit_cmdline("short", 10), "short");
+        assert_eq!(fit_cmdline("exact_ten!", 10), "exact_ten!");
+        assert_eq!(fit_cmdline("eleven_char", 10), "eleven_ch…");
+        assert_eq!(fit_cmdline("", 5), "");
+        assert_eq!(fit_cmdline("abc", 0), "");
     }
 
     #[test]

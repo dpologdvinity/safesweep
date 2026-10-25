@@ -118,7 +118,12 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         };
         let logged = match &removed {
             Ok(()) => writeln!(manifest, "{}\t{}", entry.bytes, shown),
-            Err(e) => writeln!(manifest, "ERROR\t{}\t{e}", shown),
+            Err(e) => writeln!(
+                manifest,
+                "ERROR\t{}\t{}",
+                shown,
+                escape_text(&e.to_string())
+            ),
         };
         match removed {
             Ok(()) => {
@@ -128,8 +133,11 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
                 out.removed += 1;
             }
             Err(e) => {
-                out.lines
-                    .push(format!("failed {} (may be partly removed): {e}", shown));
+                out.lines.push(format!(
+                    "failed {} (may be partly removed): {}",
+                    shown,
+                    escape_text(&e.to_string())
+                ));
                 out.failed += 1;
             }
         }
@@ -137,8 +145,9 @@ pub fn clean(rows: &[Row], ctx: &Ctx, apply: bool, manifest_dir: &Path) -> io::R
         // working log there is no record of further deletions, so stop here.
         if let Err(e) = logged {
             out.lines.push(format!(
-                "stopped: {} not logged, manifest write failed: {e}",
-                shown
+                "stopped: {} not logged, manifest write failed: {}",
+                shown,
+                escape_text(&e.to_string())
             ));
             out.failed += 1;
             break;
