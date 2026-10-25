@@ -2,7 +2,7 @@
 # (src/main.rs, the command line). See ARCHITECTURE.md. Release steps are in RELEASING.md.
 [package]
 name = "safesweep"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2024"
 # let-chains in `if let ... && let ...` need 1.88
 rust-version = "1.88"

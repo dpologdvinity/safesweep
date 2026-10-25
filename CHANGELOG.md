@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## 0.6.7 - 2026-10-25
+
+### Fixed
+- Error messages from failed filesystem removals are escaped before printing and logging to sanitize untrusted driver/filesystem strings.
+- Long command lines in `safesweep why` are truncated with an ellipsis (`…`) at 100 characters.
+
 ## 0.6.6 - 2026-10-24
 
 ### Added
