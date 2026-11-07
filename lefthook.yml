@@ -9,6 +9,10 @@ pre-commit:
     rustfmt:
       glob: "*.rs"
       run: cargo fmt --all -- --check
+    typos:
+      # typos would scan binary assets when handed explicit paths.
+      exclude: "*.{gif,png,jpg,jpeg,webp,ico,svg,pdf,woff,woff2,ttf}"
+      run: typos --force-exclude {staged_files}
 pre-push:
   commands:
     clippy:
