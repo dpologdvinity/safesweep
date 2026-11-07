@@ -1,0 +1,13 @@
+# typos config: https://github.com/crate-ci/typos
+[files]
+extend-exclude = [
+  "*.{gif,png,jpg,jpeg,webp,ico,svg,pdf,woff,woff2,ttf}",
+]
+
+[default.extend-words]
+# ratatui is the Rust TUI crate name.
+"ratatui" = "ratatui"
+# Regex fragment "[Ll]ocation" in install.sh is split by the tokenizer.
+"ocation" = "ocation"
+# "PnP" (Yarn Plug'n'Play) is split by the tokenizer into "Pn" + "P".
+"pn" = "pn"
