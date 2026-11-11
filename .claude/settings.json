@@ -1,0 +1,19 @@
+{
+  "worktree": {
+    "bgIsolation": "none"
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "clangd-lsp@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "ponytail@ponytail": true
+  }
+}
