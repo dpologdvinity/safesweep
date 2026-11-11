@@ -24,6 +24,7 @@ You need:
 git clone https://github.com/dpologdvinity/safesweep
 cd safesweep
 cargo build
+lefthook install    # optional: pre-commit secret scan (gitleaks), format and spelling checks; clippy on push
 ```
 
 ## Everyday commands
