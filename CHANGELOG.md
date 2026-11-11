@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Before 1.0, a minor version can change behavior.
 
+## Unreleased
+
+### Security
+- Bumped `rustix` to 1.1.6 for [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html) (unsound xattr functions). safesweep does not call the affected functions.
+
 ## 0.6.7 - 2026-10-25
 
 ### Fixed
