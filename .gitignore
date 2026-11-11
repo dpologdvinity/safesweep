@@ -1,1 +1,20 @@
 /target
+
+# Secrets and per-machine overrides (.claude/settings.local.json, CLAUDE.local.md, ...)
+.env
+.env.*
+!.env.example
+*.local.*
+lefthook-local.yml
+
+# Build and tool output
+/dist
+/result
+lcov.info
+.ruff_cache/
+
+# Agent scratch space (worktrees, brainstorm sessions, browser captures, handoff notes)
+.worktrees/
+.superpowers/
+.playwright-mcp/
+HANDOFF.md

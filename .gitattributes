@@ -1,0 +1,3 @@
+# Normalize text to LF on every platform; the shell scripts break with CRLF.
+* text=auto eol=lf
+*.gif binary
